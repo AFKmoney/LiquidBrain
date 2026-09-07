@@ -21,7 +21,9 @@ const HOST = process.env.HOST || '0.0.0.0';
 const EMBEDDING_DIM = 128;
 const LANGUAGE_DEPTH = 8;
 const CAPACITY = Number(process.env.BRAIN_CAPACITY || 512);
-const NEIGHBOUR_RADIUS = 0.35; // concepts closer than this merge into one trace
+// The plane the frontend renders spans 3×3 units, so a 0.75 radius leaves a
+// handful of concepts sparse but connected — enough for a visible attractor.
+const NEIGHBOUR_RADIUS = 0.75;
 const BUCKET = NEIGHBOUR_RADIUS;
 
 // ─── Deterministic embedding ────────────────────────────────────
@@ -144,7 +146,9 @@ function store(input) {
 
   for (const id of buckets.get(key) ?? []) {
     const existing = memory.get(id);
-    if (!existing) continue;
+    // A shared bucket is a candidate, not a match: LSH cells are square, so two
+    // points in one cell can still be far apart. Only reinforce a real neighbour.
+    if (!existing || distance(existing, { re: e.re, im: e.im }) >= NEIGHBOUR_RADIUS) continue;
     const seen = existing.access_count + 1;
     const w = 1 / (seen + 1); // a reinforced concept drifts less with each visit
     existing.re = round6(existing.re * (1 - w) + e.re * w);
