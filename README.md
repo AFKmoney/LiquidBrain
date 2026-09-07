@@ -33,22 +33,30 @@ The dashboard adapts seamlessly to mobile and tablet viewports.
 ## 🚀 Features
 
 ### Fractal Cognition Pipeline
-Every request flows through the complete AGI cognitive pipeline:
-1. **PERCEIVE** — Sensory input is embedded into the complex plane
-2. **THINK** — Fractal neural cycles activate concept nodes
-3. **RECALL** — Memory retrieval via LSH over complex embeddings
-4. **STATE** — Coherence and meta-cognition assessment
-5. **GENERATE** — LLM produces a context-enriched response
-6. **REFLECT** — Post-generation self-evaluation and rewiring
+`POST /api/agi/chat` runs the pipeline in this order (see `src/lib/agi/pipeline.ts`):
+1. **PERCEIVE** — the message is embedded into the complex plane by the engine
+2. **RECALL** — salient concepts are retrieved and rendered into the prompt
+3. **STATE** — coherence + last insight are read from the meta-cognition layer
+4. **GENERATE** — the selected LLM answers, with the last 10 stored turns replayed
+5. **PERSIST** — both turns are written to SQLite when it is configured
+6. **THINK** — 3 background cycles are queued (fire-and-forget, never blocks the reply)
+
+**REFLECT** (self-evaluation + rewiring) stays an explicit user action, in the sidebar
+or the reflection bar.
+
+Steps 1–3 and 6 are no-ops when `FRACTALBRAIN_URL` is unreachable: the LLM still answers.
 
 ### Multi-Model Support
 Route requests to different AI providers through a unified cognitive layer:
 
 | Provider | Models | Capabilities |
 |----------|--------|-------------|
-| **Z-AI** | GLM-5.1, GLM-5.1-Flash | Chat, Reasoning |
-| **NVIDIA NIM** | Nemotron Ultra, Llama 3.1, Mixtral | Chat, Vision, Embeddings |
-| **MiniMax** | MiniMax-Text-01, abab6.5s | Chat, TTS, Video |
+| **Z-AI** | GLM-5.1 (default) | Chat, reasoning, coding, agentic — needs `.z-ai-config` or `ZAI_API_KEY`/`ZAI_BASE_URL` |
+| **NVIDIA NIM** | 34 entries: Nemotron Ultra/Super/Nano, DeepSeek, Kimi, Qwen, Llama 3.3/4, MiniMax M3/M2.7, FLUX.1, SD 3.5, Cosmos3, Magpie TTS, Llama Guard… | Chat, vision, image generation, TTS, safety |
+| **MiniMax** | direct `api.minimax.chat` client (no registry model uses it yet) | Chat |
+
+The registry (`src/lib/models/registry.ts`) is the single source of truth — `GET /api/agi/models`
+exposes it, and `src/lib/models/registry.test.ts` asserts that ids, categories and key names stay coherent.
 
 ### Real-Time Fractal Visualization
 - Mandelbrot set rendered as the neural substrate
@@ -64,46 +72,48 @@ Route requests to different AI providers through a unified cognitive layer:
 
 ### Capabilities
 - 💬 **Chat** — Conversational AI with fractal context enrichment
-- 👁️ **Vision** — Image understanding and analysis
+- 👁️ **Vision** — Image understanding and analysis (URL-based)
 - 🎨 **Image Generation** — AI-powered image creation
 - 🔊 **Text-to-Speech** — Natural voice synthesis
 - 🛡️ **Safety** — Content moderation and safety checks
 - 🧠 **Think** — Trigger fractal neural cycles manually
 - 🪞 **Reflect** — Meta-cognitive self-assessment
-- 🏋️ **Train** — Online learning with custom text
+- 🏋️ **Train** — Online learning with custom text (Brain Console)
+- 🎞️ **Video** — model selection is wired, generation is still a stub in the UI
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-┌──────────────────────────────────────────────┐
-│                   Frontend                    │
-│  Next.js 16 + React 19 + Tailwind CSS 4      │
-│  FractalSNN · MemoryMap · ModelSelector       │
-│  ControlPanel · ReflectionBar · Sequencer     │
-└──────────────┬───────────────────────────────┘
-               │ /api/agi/*
-┌──────────────▼───────────────────────────────┐
-│              Next.js API Routes               │
-│  chat · vision · image · tts · safety         │
-│  perceive · think · reflect · state · memory  │
-│  models · train                               │
-└──────────────┬───────────────────────────────┘
-               │
-       ┌───────┴───────┐
-       │               │
-┌──────▼──────┐ ┌──────▼──────┐
-│  FractalBrain │ │  AI Models  │
-│  (Port 8080)  │ │  (Multi-    │
-│  Rust Backend │ │   Provider) │
-└──────────────┘ └─────────────┘
+┌────────────────────────────────────────────┐
+│ Frontend                                   │
+│ Next.js 16 + React 19 + Tailwind CSS 4     │
+│ FractalSNN · MemoryMap · ModelSelector     │
+│ ControlPanel · ReflectionBar · Sequencer   │
+└────────────────────────────────────────────┘
+                      │  /api/agi/*
+┌────────────────────────────────────────────┐
+│ Next.js API Routes                         │
+│ chat · history · vision · image · tts      │
+│ safety · perceive · think · reflect        │
+│ state · memory · models · train            │
+└────────────────────────────────────────────┘
+                      │
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+│ FractalBrain     │ │ SQLite + Prisma  │ │ AI providers     │
+│ (optional Rust)  │ │ ChatTurn history │ │ Z-AI SDK         │
+│ FRACTALBRAIN_URL │ │ best-effort:     │ │ NVIDIA NIM       │
+│ perceive · think │ │ no DB → chats    │ │ MiniMax          │
+│ reflect · train  │ │ are ephemeral    │ │ per-model choice │
+│ state · memory   │ │                  │ │ in the UI        │
+└──────────────────┘ └──────────────────┘ └──────────────────┘
 ```
 
 ### Tech Stack
 
-- **Frontend**: Next.js 16, React 19, Tailwind CSS 4, shadcn/ui, Zustand, Framer Motion, Recharts
-- **Backend**: Next.js API Routes (App Router), Z-AI Web Dev SDK
+- **Frontend**: Next.js 16, React 19, Tailwind CSS 4, shadcn/ui, Zustand (Framer Motion / Recharts are installed but currently unused)
+- **Backend**: Next.js API Routes (App Router), Z-AI Web Dev SDK, Prisma + SQLite (chat history)
 - **AI Providers**: Z-AI, NVIDIA NIM, MiniMax
 - **FractalBrain**: Rust-based cognitive engine (external service)
 - **State Management**: Zustand for client state
@@ -117,7 +127,8 @@ Route requests to different AI providers through a unified cognitive layer:
 src/
 ├── app/
 │   ├── api/agi/
-│   │   ├── chat/route.ts       # Chat with cognitive pipeline
+│   │   ├── chat/route.ts       # Chat: perceive → recall → state → generate → persist
+│   │   ├── history/route.ts    # GET/DELETE stored conversation (SQLite, optional)
 │   │   ├── vision/route.ts     # Vision analysis
 │   │   ├── image/route.ts      # Image generation
 │   │   ├── tts/route.ts        # Text-to-speech
@@ -130,23 +141,27 @@ src/
 │   │   ├── models/route.ts     # Model registry
 │   │   └── train/route.ts      # Online training
 │   ├── globals.css
-│   ├── layout.tsx
+│   ├── layout.tsx              # Self-hosted Geist fonts (no Google Fonts at build time)
 │   └── page.tsx                # Main AGI dashboard
 ├── components/
 │   ├── agi/
 │   │   ├── FractalSNN.tsx      # Mandelbrot neural visualization
 │   │   ├── MemoryMap.tsx       # Interactive concept cloud
-│   │   ├── ModelSelector.tsx   # Multi-model picker
-│   │   ├── ControlPanel.tsx    # Chat & control interface
-│   │   ├── ReflectionBar.tsx   # Coherence & reflection display
-│   │   └── Sequencer.tsx       # Pipeline step sequencer
-│   └── ui/                     # shadcn/ui components
+│   │   ├── ModelSelector.tsx   # Multi-model picker + provider keys
+│   │   ├── ControlPanel.tsx    # Brain console: metrics, actions, training
+│   │   ├── ReflectionBar.tsx   # Coherence / surprise / confidence / insight bar
+│   │   └── Sequencer.tsx       # Perceive → think step sequencer
+│   └── ui/                     # shadcn/ui primitives (vendored)
 ├── hooks/
 │   ├── use-mobile.ts
 │   └── use-toast.ts
 └── lib/
     ├── agi/
-    │   ├── api.ts              # API client & types
+    │   ├── backend.ts          # FRACTALBRAIN_URL, timeouts, callBackend()
+    │   ├── pipeline.ts         # perceive → recall → state context builder
+    │   ├── history.ts          # Prisma chat persistence (graceful fallback)
+    │   ├── types.ts            # Shared client/server types (backend contract)
+    │   ├── api.ts              # Client API wrapper
     │   └── store.ts            # Zustand state store
     ├── models/
     │   ├── registry.ts         # Model definitions & categories
@@ -155,54 +170,89 @@ src/
     └── utils.ts
 ```
 
+
 ---
 
 ## ⚡ Getting Started
 
 ### Prerequisites
-- Node.js 18+ or Bun
-- FractalBrain backend running on `http://127.0.0.1:8080` (optional — the dashboard works in LLM-only mode without it)
+- Node.js 20+ (Bun also works — the repo ships `bun.lock`)
+- FractalBrain backend running on `http://127.0.0.1:8080` (**optional** — without it the dashboard runs in LLM-only mode: chat works, Think/Reflect/Train/Memory report "offline")
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/Liquid2HQ/LiquidBrain.git
+git clone https://github.com/AFKmoney/LiquidBrain.git
 cd LiquidBrain
 
-# Install dependencies
-npm install
+# Install dependencies (also prepares the Prisma client)
+npm install        # or: bun install
 
 # Start the development server
-npm run dev
+npm run dev        # or: bun run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) to see the dashboard.
 
+> **Lockfile note:** `bun.lock` is the lock of record. It predates the `geist` dependency added
+> when fonts moved off Google Fonts, so run `bun install` (or `npm install`, which resolves from
+> the registry) once to refresh it before relying on `bun ci`-style installs.
+
 ### Environment Variables
 
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` and adjust. `.env` is git-ignored; only `.env.example` is committed.
 
-```env
-# FractalBrain Backend (optional)
-FRACTALBRAIN_URL=http://127.0.0.1:8080
+| Variable | Required | Purpose |
+|--------|----------|---------|
+| `FRACTALBRAIN_URL` | no | Base URL of the FractalBrain engine. Defaults to `http://127.0.0.1:8080`. Every `/api/agi/{state,memory,perceive,think,reflect,train}` proxy reads it. |
+| `DATABASE_URL` | no | SQLite file for chat persistence, resolved **relative to `prisma/`** (`file:../db/custom.db` → `db/custom.db`). Leave unset (or skip `prisma generate`) and the app simply keeps chats in memory for the current page session. |
+| `NVIDIA_API_KEY` | for NVIDIA models | NVIDIA NIM chat / image / TTS / safety. Can also be pasted in the in-app settings panel. |
+| `MINIMAX_API_KEY` | for MiniMax models | MiniMax chat. Also settable in the UI. |
+| `ZAI_API_KEY` + `ZAI_BASE_URL` | optional | Lets the Z-AI provider use an OpenAI-compatible endpoint instead of a config file. |
 
-# AI Provider API Keys (optional — enter via the UI)
-NVIDIA_API_KEY=
-MINIMAX_API_KEY=
-ZAI_API_KEY=
-```
+**Z-AI (the default `GLM-5.1` model)** is reached through `z-ai-web-dev-sdk`, which reads
+`{ "baseUrl": "...", "apiKey": "..." }` from a `.z-ai-config` JSON file in the project root,
+`~/.z-ai-config`, or `/etc/.z-ai-config`. Without that file (and without `ZAI_API_KEY`/`ZAI_BASE_URL`)
+`POST /api/agi/chat` answers `502` with an explicit "Z-AI is not configured …" message — pick another
+provider in the model selector instead. The file is git-ignored on purpose.
 
 ---
 
 ## 🧪 Usage
 
-1. **Chat**: Type a message to interact with LiquidBrain. The cognitive pipeline enriches every response with fractal context.
-2. **Switch Models**: Click the model badge (e.g., "GLM-5.1") to open the model selector and choose from NVIDIA, MiniMax, or Z-AI models.
-3. **Think**: Trigger manual think cycles to process the current neural state.
-4. **Reflect**: Run a self-reflection to assess coherence and potentially rewire connections.
-5. **Train**: Feed custom text into the fractal network for online learning.
-6. **Fractal View**: Toggle the Mandelbrot visualization to see the neural substrate in action.
+1. **Chat**: Type a message to interact with LiquidBrain. The cognitive pipeline enriches every response with fractal context, and the last 10 stored turns are replayed to the model so the conversation keeps its thread.
+2. **Switch Models**: Click the model badge (e.g., "GLM-5.1") to open the model selector and choose from NVIDIA, MiniMax, or Z-AI models. The choice is remembered across reloads.
+3. **Brain Console**: the "Brain Console" button (sidebar) opens live engine metrics plus Think / Reflect / Sync, the **Train** box and the **Sequencer** (perceive → think step programs).
+4. **Reflect**: Run a self-reflection to assess coherence and potentially rewire connections — the bottom bar shows coherence, surprise, confidence, memory utilization and the latest insight.
+5. **Fractal View**: Toggle the Mandelbrot visualization to see the neural substrate in action; concepts that fired during the last think cycle are highlighted.
+6. **Esc** closes the top-most overlay (model selector → fractal view → console).
+
+---
+
+## 🗄️ Chat persistence
+
+`/api/agi/chat` writes both turns into SQLite (`ChatTurn`), and `/api/agi/history` serves them back, so the transcript and the model's conversation context survive a reload.
+
+```bash
+npm run db:generate   # prisma generate
+npm run db:push       # creates db/custom.db tables from prisma/schema.prisma
+```
+
+The whole layer is best-effort: if Prisma was not generated or the SQLite file is missing,
+`GET /api/agi/history` returns `{ "messages": [], "persisted": false }` and the UI shows
+"Ephemeral session" instead of failing.
+
+---
+
+## 🛠️ Development checks
+
+```bash
+npm run typecheck   # tsc --noEmit (the build also type-checks now)
+npm run lint        # eslint
+npm test            # node --test on src/**/*.test.ts (type-stripped, no extra toolchain)
+npm run check       # all three
+```
 
 ---
 
