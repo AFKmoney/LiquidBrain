@@ -43,6 +43,10 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
+# mini-services install leftovers
+mini-services/*/bun.lock
+mini-services/*/node_modules/
+
 # runtime leftovers
 *.pid
 

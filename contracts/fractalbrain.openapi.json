@@ -1,0 +1,313 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FractalBrain cognitive engine",
+    "version": "2.0.0",
+    "summary": "Contract for the engine behind the LiquidBrain dashboard",
+    "description": "The Rust engine is an external service, so this file is the versioned contract it must satisfy and that `mini-services/brain-mock` implements for local development. The Next.js proxies in `src/app/api/agi/*` are thin pass-throughs: any response they forward must validate against the schemas below. `contracts/contract.test.ts` enforces three things: (1) every `BackendEndpoint` in `src/lib/agi/backend.ts` exists here, (2) the mock satisfies the contract, (3) the mock and `src/lib/agi/types.ts` expose the same fields."
+  },
+  "externalDocs": {
+    "description": "Mock engine + how to run it",
+    "url": "https://github.com/AFKmoney/LiquidBrain/tree/main/mini-services/brain-mock"
+  },
+  "servers": [
+    { "url": "http://127.0.0.1:8080", "description": "default FRACTALBRAIN_URL" }
+  ],
+  "paths": {
+    "/api/state": {
+      "get": {
+        "operationId": "getState",
+        "summary": "Meta-cognition snapshot used by the dashboard poll (every 3s)",
+        "responses": {
+          "200": {
+            "description": "Current brain state",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BrainState" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/memory": {
+      "get": {
+        "operationId": "getMemory",
+        "summary": "All memory traces with their position in the complex plane",
+        "responses": {
+          "200": {
+            "description": "Concept list",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MemoryResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/perceive": {
+      "post": {
+        "operationId": "perceive",
+        "summary": "Embed input into the complex plane and store it as a concept",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PerceiveRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Embedding result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PerceiveResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidInput" }
+        }
+      }
+    },
+    "/api/think": {
+      "post": {
+        "operationId": "think",
+        "summary": "Run N fractal cycles over the current activation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ThinkRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cycle summary",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ThinkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reflect": {
+      "post": {
+        "operationId": "reflect",
+        "summary": "Self-evaluation: coherence, surprise, confidence, rewire decision",
+        "responses": {
+          "200": {
+            "description": "Reflection result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReflectResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/train": {
+      "post": {
+        "operationId": "train",
+        "summary": "Online learning on a text sample",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TrainRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Training loss",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TrainResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidInput" }
+        }
+      }
+    },
+    "/api/reset": {
+      "post": {
+        "operationId": "reset",
+        "summary": "Wipe memory and activations (test/dev helper, optional to implement)",
+        "responses": {
+          "200": {
+            "description": "Cleared counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["cleared"],
+                  "properties": { "cleared": { "type": "integer", "minimum": 0 } },
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "InvalidInput": {
+        "description": "Missing or empty required field",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": ["error"],
+              "properties": { "error": { "type": "string" } },
+              "additionalProperties": true
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "BrainState": {
+        "type": "object",
+        "required": [
+          "status",
+          "model",
+          "embedding_dim",
+          "brain_nodes",
+          "language_depth",
+          "memory_concepts",
+          "coherence",
+          "last_insight"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["online", "degraded", "offline"],
+            "description": "Only 'online' makes the UI show a connected brain"
+          },
+          "model": { "type": "string", "minLength": 1 },
+          "embedding_dim": { "type": "integer", "minimum": 1 },
+          "brain_nodes": { "type": "integer", "minimum": 0 },
+          "language_depth": { "type": "integer", "minimum": 1 },
+          "memory_concepts": { "type": "integer", "minimum": 0 },
+          "coherence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "last_insight": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      },
+      "ConceptSummary": {
+        "type": "object",
+        "required": ["id", "position_re", "position_im", "label", "salience", "access_count"],
+        "properties": {
+          "id": { "type": "integer", "minimum": 0 },
+          "position_re": { "type": "number", "description": "Real part of the fractal position" },
+          "position_im": { "type": "number", "description": "Imaginary part of the fractal position" },
+          "label": { "type": ["string", "null"], "description": "Short human label, or null for anonymous concepts" },
+          "salience": { "type": "number", "minimum": 0, "maximum": 1 },
+          "access_count": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": true
+      },
+      "MemoryResponse": {
+        "type": "object",
+        "required": ["concepts", "total"],
+        "properties": {
+          "concepts": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ConceptSummary" }
+          },
+          "total": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": true
+      },
+      "PerceiveRequest": {
+        "type": "object",
+        "required": ["input"],
+        "properties": {
+          "input": { "type": "string", "minLength": 1, "maxLength": 32000 }
+        },
+        "additionalProperties": false
+      },
+      "PerceiveResponse": {
+        "type": "object",
+        "required": ["embedding_dim", "perceived", "memory_stored"],
+        "properties": {
+          "embedding_dim": { "type": "integer", "minimum": 1 },
+          "perceived": { "type": "boolean" },
+          "memory_stored": { "type": "boolean" },
+          "concept": { "$ref": "#/components/schemas/ConceptSummary" },
+          "merged": {
+            "type": "boolean",
+            "description": "True when the input reinforced an existing concept instead of creating one"
+          }
+        },
+        "additionalProperties": true
+      },
+      "ThinkRequest": {
+        "type": "object",
+        "properties": {
+          "cycles": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5 }
+        },
+        "additionalProperties": false
+      },
+      "ThinkResponse": {
+        "type": "object",
+        "required": ["cycles_run", "active_nodes"],
+        "properties": {
+          "cycles_run": { "type": "integer", "minimum": 0 },
+          "active_nodes": { "type": "integer", "minimum": 0 },
+          "active_concept_ids": {
+            "type": "array",
+            "description": "Optional: ids of the concepts that fired, letting the UI highlight them precisely instead of approximating",
+            "items": { "type": "integer" }
+          }
+        },
+        "additionalProperties": true
+      },
+      "ReflectResponse": {
+        "type": "object",
+        "required": [
+          "coherence",
+          "avg_surprise",
+          "avg_confidence",
+          "should_rewire",
+          "insight",
+          "memory_utilization"
+        ],
+        "properties": {
+          "coherence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "avg_surprise": { "type": "number", "minimum": 0, "maximum": 1 },
+          "avg_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "should_rewire": { "type": "boolean" },
+          "insight": { "type": ["string", "null"] },
+          "memory_utilization": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "additionalProperties": true
+      },
+      "TrainRequest": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1, "maxLength": 65536 }
+        },
+        "additionalProperties": false
+      },
+      "TrainResponse": {
+        "type": "object",
+        "required": ["loss"],
+        "properties": {
+          "loss": { "type": "number", "minimum": 0, "description": "-1 is reserved for failure" },
+          "steps": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}

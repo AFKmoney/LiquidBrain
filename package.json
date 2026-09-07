@@ -9,12 +9,14 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run lint && npm test",
-    "test": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve-hooks.mjs --test \"src/**/*.test.ts\"",
+    "test": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve-hooks.mjs --test \"src/**/*.test.ts\" \"contracts/**/*.test.ts\"",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "postinstall": "prisma generate || node ./scripts/notify-prisma-skipped.mjs"
+    "postinstall": "prisma generate || node ./scripts/notify-prisma-skipped.mjs",
+    "mock:brain": "node mini-services/brain-mock/server.mjs",
+    "test:contract": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve-hooks.mjs --test \"contracts/**/*.test.ts\""
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

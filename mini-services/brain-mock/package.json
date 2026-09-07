@@ -1,0 +1,11 @@
+{
+  "name": "liquidbrain-brain-mock",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Dependency-free reference implementation of contracts/fractalbrain.openapi.json",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  }
+}

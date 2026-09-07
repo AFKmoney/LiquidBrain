@@ -39,11 +39,17 @@ export interface PerceiveResponse {
   embedding_dim: number;
   perceived: boolean;
   memory_stored: boolean;
+  /** Optional: the trace the input landed on, when the engine returns one. */
+  concept?: ConceptSummary;
+  /** Optional: true when an existing concept was reinforced rather than created. */
+  merged?: boolean;
 }
 
 export interface ThinkResponse {
   cycles_run: number;
   active_nodes: number;
+  /** Optional: exact ids of the concepts that fired, when the engine reports them. */
+  active_concept_ids?: number[];
 }
 
 export interface ReflectResponse {
@@ -57,6 +63,8 @@ export interface ReflectResponse {
 
 export interface TrainResponse {
   loss: number;
+  /** Optional: gradient steps the engine actually ran. */
+  steps?: number;
 }
 
 export interface ChatMessage {
