@@ -1,27 +1,25 @@
 import { NextResponse } from "next/server";
+import { callBackend } from "@/lib/agi/backend";
+import type { ReflectResponse } from "@/lib/agi/types";
 
-const BACKEND_URL = "http://127.0.0.1:8080";
+const EMPTY: ReflectResponse & { error?: string } = {
+  coherence: 0,
+  avg_surprise: 0,
+  avg_confidence: 0,
+  should_rewire: false,
+  insight: null,
+  memory_utilization: 0,
+};
 
 export async function POST() {
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/reflect`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok) {
-      return NextResponse.json(
-        { coherence: 0, avg_surprise: 0, avg_confidence: 0, should_rewire: false, insight: null, memory_utilization: 0, error: `Backend returned ${res.status}` },
-        { status: res.status }
-      );
-    }
-    const data = await res.json();
-    return NextResponse.json(data);
-  } catch {
-    return NextResponse.json(
-      { coherence: 0, avg_surprise: 0, avg_confidence: 0, should_rewire: false, insight: null, memory_utilization: 0, error: "Backend unreachable" },
-      { status: 503 }
-    );
+  const result = await callBackend<ReflectResponse>("/api/reflect", {
+    method: "POST",
+    body: {},
+  });
+
+  if (!result.ok) {
+    return NextResponse.json({ ...EMPTY, error: result.error }, { status: result.status ?? 503 });
   }
+
+  return NextResponse.json(result.data);
 }

@@ -1,70 +1,32 @@
 'use client';
 
-// ─── API Types matching the Rust backend ─────────────────────────
+// ─── API Service (client side) ──────────────────────────────────
+// Types live in ./types so server routes can share them without
+// importing a 'use client' module.
 
-export interface BrainState {
-  status: string;
-  model: string;
-  embedding_dim: number;
-  brain_nodes: number;
-  language_depth: number;
-  memory_concepts: number;
-  coherence: number;
-  last_insight: string | null;
-}
+import type {
+  BrainState,
+  MemoryResponse,
+  ChatResponse,
+  PerceiveResponse,
+  ThinkResponse,
+  ReflectResponse,
+  TrainResponse,
+  StoredChatMessage,
+} from './types';
 
-export interface ConceptSummary {
-  id: number;
-  position_re: number;
-  position_im: number;
-  label: string | null;
-  salience: number;
-  access_count: number;
-}
-
-export interface MemoryResponse {
-  concepts: ConceptSummary[];
-  total: number;
-}
-
-export interface ChatResponse {
-  reply: string;
-  coherence: number;
-  memory_size: number;
-  model?: string;
-}
-
-export interface PerceiveResponse {
-  embedding_dim: number;
-  perceived: boolean;
-  memory_stored: boolean;
-}
-
-export interface ThinkResponse {
-  cycles_run: number;
-  active_nodes: number;
-}
-
-export interface ReflectResponse {
-  coherence: number;
-  avg_surprise: number;
-  avg_confidence: number;
-  should_rewire: boolean;
-  insight: string | null;
-  memory_utilization: number;
-}
-
-export interface TrainResponse {
-  loss: number;
-}
-
-export interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: number;
-}
-
-// ─── API Service ────────────────────────────────────────────────
+export type {
+  BrainState,
+  ConceptSummary,
+  MemoryResponse,
+  ChatResponse,
+  PerceiveResponse,
+  ThinkResponse,
+  ReflectResponse,
+  TrainResponse,
+  ChatMessage,
+  StoredChatMessage,
+} from './types';
 
 const API_BASE = '/api/agi';
 
@@ -78,7 +40,16 @@ class AgiApi {
       },
     });
     if (!res.ok) {
-      throw new Error(`API Error: ${res.status} ${res.statusText}`);
+      // Route handlers return { error } — surface that instead of a bare
+      // status line, so the UI can show why a call failed.
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const data = await res.json();
+        if (data && typeof data.error === 'string') detail = data.error;
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new Error(detail);
     }
     return res.json();
   }
@@ -124,6 +95,16 @@ class AgiApi {
       method: 'POST',
       body: JSON.stringify({ text }),
     });
+  }
+
+  async getHistory(limit: number = 20): Promise<{ messages: StoredChatMessage[]; persisted: boolean }> {
+    return this.request<{ messages: StoredChatMessage[]; persisted: boolean }>(
+      `/history?limit=${encodeURIComponent(String(limit))}`
+    );
+  }
+
+  async clearHistory(): Promise<{ removed: number }> {
+    return this.request<{ removed: number }>('/history', { method: 'DELETE' });
   }
 
   async isOnline(): Promise<boolean> {

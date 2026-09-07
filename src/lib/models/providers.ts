@@ -54,7 +54,7 @@ export interface TTSResponse {
 export interface SafetyResponse {
   is_safe: boolean;
   categories?: Record<string, { is_safe: boolean; confidence: number }>;
-  violation?: string;
+  violation?: string | null;
 }
 
 // ─── NVIDIA NIM Provider ─────────────────────────────────────────
@@ -186,32 +186,96 @@ async function nvidiaSafetyCheck(
 
 // ─── Z-AI Provider ───────────────────────────────────────────────
 
+/**
+ * The bundled SDK only reads credentials from a `.z-ai-config` file on disk,
+ * which is unavailable in read-only / serverless deployments. When the env
+ * vars are set we talk to the same OpenAI-compatible endpoint directly, and
+ * otherwise fall back to the SDK.
+ */
+function zaiEnvConfig(): { baseUrl: string; apiKey: string } | null {
+  const baseUrl = (process.env.ZAI_BASE_URL || '').replace(/\/+$/, '');
+  const apiKey = process.env.ZAI_API_KEY || '';
+  return baseUrl && apiKey ? { baseUrl, apiKey } : null;
+}
+
+function flattenContent(content: string | MessageContent[]): string {
+  return typeof content === 'string'
+    ? content
+    : content.map((c) => c.text || '').join('');
+}
+
 async function zaiChatCompletion(
   request: ChatCompletionRequest
 ): Promise<ChatCompletionResponse> {
-  // Use the z-ai-web-dev-sdk (must be called from server-side)
-  const ZAI = (await import('z-ai-web-dev-sdk')).default;
-  const zai = await ZAI.create();
-
-  const completion = await zai.chat.completions.create({
-    messages: request.messages.map((m) => ({
-      role: m.role as 'system' | 'user' | 'assistant',
-      content: typeof m.content === 'string' ? m.content : m.content.map(c => c.text || '').join(''),
-    })),
+  const messages = request.messages.map((m) => ({
+    role: m.role as 'system' | 'user' | 'assistant',
+    content: flattenContent(m.content),
+  }));
+  const body = {
+    model: request.model,
+    messages,
     temperature: request.temperature ?? 0.8,
     max_tokens: request.max_tokens ?? 512,
-  });
+    thinking: { type: 'disabled' as const },
+  };
+
+  const env = zaiEnvConfig();
+  if (env) {
+    const response = await fetch(`${env.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${env.apiKey}`,
+        'X-Z-AI-From': 'Z',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Z-AI API Error (${response.status}): ${detail.slice(0, 400)}`);
+    }
+    return normalise(await response.json(), 'zai');
+  }
+
+  // Use the z-ai-web-dev-sdk (must be called from server-side)
+  const ZAI = (await import('z-ai-web-dev-sdk')).default;
+  let zai: Awaited<ReturnType<typeof ZAI.create>>;
+  try {
+    zai = await ZAI.create();
+  } catch {
+    throw new Error(
+      'Z-AI is not configured: create .z-ai-config with { "baseUrl", "apiKey" } ' +
+        'in the project root, or set ZAI_API_KEY + ZAI_BASE_URL, or pick another provider.'
+    );
+  }
+
+  const completion = await zai.chat.completions.create(body);
+
+  return normalise(completion, 'zai');
+}
+
+/** Tolerate the small shape differences between providers. */
+function normalise(data: unknown, prefix = 'llm'): ChatCompletionResponse {
+  const payload = (data ?? {}) as {
+    id?: string;
+    choices?: Array<{
+      message?: { role?: string; content?: string | null };
+      finish_reason?: string;
+    }>;
+    usage?: ChatCompletionResponse['usage'];
+  };
 
   return {
-    id: completion.id || 'zai-' + Date.now(),
-    choices: (completion.choices || []).map((choice: any) => ({
+    id: payload.id || `${prefix}-${Date.now()}`,
+    choices: (payload.choices || []).map((choice) => ({
       message: {
         role: choice.message?.role || 'assistant',
         content: choice.message?.content || '',
       },
       finish_reason: choice.finish_reason || 'stop',
     })),
-    usage: completion.usage,
+    usage: payload.usage,
   };
 }
 
@@ -241,16 +305,7 @@ async function minimaxChatCompletion(
   }
 
   const data = await response.json();
-  return {
-    id: data.id || 'mm-' + Date.now(),
-    choices: (data.choices || []).map((choice: any) => ({
-      message: {
-        role: choice.message?.role || 'assistant',
-        content: choice.message?.content || '',
-      },
-      finish_reason: choice.finish_reason || 'stop',
-    })),
-  };
+  return normalise(data, 'mm');
 }
 
 // ─── Unified Provider Interface ──────────────────────────────────
@@ -264,7 +319,7 @@ export async function chatCompletion(
 
   switch (model.provider) {
     case 'nvidia': {
-      const apiKey = apiKeys.NVIDIA_API_KEY || process.env.NVIDIA_API_KEY || '';
+      const apiKey = resolveApiKey(model, apiKeys);
       if (!apiKey) throw new Error('NVIDIA API key required. Get one at build.nvidia.com');
       return nvidiaChatCompletion(request, apiKey);
     }
@@ -272,7 +327,7 @@ export async function chatCompletion(
       return zaiChatCompletion(request);
     }
     case 'minimax': {
-      const apiKey = apiKeys.MINIMAX_API_KEY || process.env.MINIMAX_API_KEY || '';
+      const apiKey = resolveApiKey(model, apiKeys);
       if (!apiKey) throw new Error('MiniMax API key required');
       return minimaxChatCompletion(request, apiKey);
     }
@@ -281,14 +336,35 @@ export async function chatCompletion(
   }
 }
 
+/**
+ * Resolve the API key for a model, preferring the key entered in the UI
+ * and falling back to the server environment.
+ */
+function resolveApiKey(model: AIModel, apiKeys: Record<string, string>): string {
+  const envKey = model.provider === 'nvidia'
+    ? process.env.NVIDIA_API_KEY
+    : model.provider === 'minimax'
+      ? process.env.MINIMAX_API_KEY
+      : process.env.ZAI_API_KEY;
+
+  return apiKeys[model.apiKeyName] || envKey || '';
+}
+
+function requireNvidiaKey(model: AIModel, apiKeys: Record<string, string>, what: string): string {
+  if (model.provider !== 'nvidia') {
+    throw new Error(`${what} is not implemented for provider "${model.provider}"`);
+  }
+  const apiKey = resolveApiKey(model, apiKeys);
+  if (!apiKey) throw new Error(`NVIDIA API key required for ${what}`);
+  return apiKey;
+}
+
 export async function imageGeneration(
   model: AIModel,
   prompt: string,
   apiKeys: Record<string, string>
 ): Promise<ImageGenResponse> {
-  const apiKey = apiKeys.NVIDIA_API_KEY || process.env.NVIDIA_API_KEY || '';
-  if (!apiKey) throw new Error('NVIDIA API key required for image generation');
-
+  const apiKey = requireNvidiaKey(model, apiKeys, 'image generation');
   return nvidiaImageGeneration(model.id, prompt, apiKey);
 }
 
@@ -297,9 +373,7 @@ export async function textToSpeech(
   text: string,
   apiKeys: Record<string, string>
 ): Promise<TTSResponse> {
-  const apiKey = apiKeys.NVIDIA_API_KEY || process.env.NVIDIA_API_KEY || '';
-  if (!apiKey) throw new Error('NVIDIA API key required for TTS');
-
+  const apiKey = requireNvidiaKey(model, apiKeys, 'text-to-speech');
   return nvidiaTTS(model.id, text, apiKey);
 }
 
@@ -308,8 +382,6 @@ export async function safetyCheck(
   text: string,
   apiKeys: Record<string, string>
 ): Promise<SafetyResponse> {
-  const apiKey = apiKeys.NVIDIA_API_KEY || process.env.NVIDIA_API_KEY || '';
-  if (!apiKey) throw new Error('NVIDIA API key required for safety check');
-
+  const apiKey = requireNvidiaKey(model, apiKeys, 'safety checks');
   return nvidiaSafetyCheck(text, model.id, apiKey);
 }
