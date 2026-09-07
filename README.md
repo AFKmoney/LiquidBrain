@@ -1,4 +1,6 @@
-# 🧠 LIQUID2 — Fractal AGI Engine
+# 🧠 LIQUIDBRAIN — Fractal AGI Engine
+
+![CI](https://github.com/AFKmoney/LiquidBrain/actions/workflows/ci.yml/badge.svg)
 
 **Real-time AGI dashboard for the LiquidBrain Fractal Engine.**  
 Perception → Cognition → Memory → Action → Reflection.
@@ -94,26 +96,31 @@ exposes it, and `src/lib/models/registry.test.ts` asserts that ids, categories a
 └────────────────────────────────────────────┘
                       │  /api/agi/*
 ┌────────────────────────────────────────────┐
-│ Next.js API Routes                         │
-│ chat · history · vision · image · tts      │
-│ safety · perceive · think · reflect        │
-│ state · memory · models · train            │
+│ Next.js API Routes (14)                    │
+│ chat (SSE or JSON) · history · keys        │
+│ vision · image · tts · safety · models     │
+│ perceive · think · reflect · state         │
+│ memory · train                             │
+│  ↓ each one: guard() — origin, throttle,   │
+│    body cap; keys resolved from the session│
 └────────────────────────────────────────────┘
                       │
 ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
 │ FractalBrain     │ │ SQLite + Prisma  │ │ AI providers     │
-│ (optional Rust)  │ │ ChatTurn history │ │ Z-AI SDK         │
-│ FRACTALBRAIN_URL │ │ best-effort:     │ │ NVIDIA NIM       │
-│ perceive · think │ │ no DB → chats    │ │ MiniMax          │
-│ reflect · train  │ │ are ephemeral    │ │ per-model choice │
-│ state · memory   │ │                  │ │ in the UI        │
+│ engine contract: │ │ ChatTurn history │ │ Z-AI SDK         │
+│ contracts/*.json │ │ best-effort:     │ │ NVIDIA NIM       │
+│ + runnable mock  │ │ no DB → chats    │ │ MiniMax          │
+│ FRACTALBRAIN_URL │ │ are ephemeral    │ │ streamed via SSE │
+│ (optional)       │ │                  │ │ per-model choice │
 └──────────────────┘ └──────────────────┘ └──────────────────┘
 ```
 
 ### Tech Stack
 
-- **Frontend**: Next.js 16, React 19, Tailwind CSS 4, shadcn/ui, Zustand (Framer Motion / Recharts are installed but currently unused)
-- **Backend**: Next.js API Routes (App Router), Z-AI Web Dev SDK, Prisma + SQLite (chat history)
+- **Frontend**: Next.js 16, React 19, Tailwind CSS 4, 7 vendored shadcn/ui primitives, Zustand
+- **Backend**: Next.js API Routes (App Router), Z-AI Web Dev SDK, Prisma + SQLite (chat history),
+  dependency-free engine mock (`mini-services/brain-mock`) and an OpenAPI 3.1 contract (`contracts/`)
+- **Streaming**: `text/event-stream` from provider to browser, no extra framework
 - **AI Providers**: Z-AI, NVIDIA NIM, MiniMax
 - **FractalBrain**: Rust-based cognitive engine (external service)
 - **State Management**: Zustand for client state
@@ -139,6 +146,7 @@ src/
 │   │   ├── state/route.ts      # Brain state proxy
 │   │   ├── memory/route.ts     # Memory retrieval proxy
 │   │   ├── models/route.ts     # Model registry
+│   │   ├── keys/route.ts       # API key custody: GET masks / POST store / DELETE forget
 │   │   └── train/route.ts      # Online training
 │   ├── globals.css
 │   ├── layout.tsx              # Self-hosted Geist fonts (no Google Fonts at build time)
@@ -155,19 +163,30 @@ src/
 ├── hooks/
 │   ├── use-mobile.ts
 │   └── use-toast.ts
+├── server/                     # server-only modules (never imported by a client component)
+│   ├── session.ts              # session cookie: read / mint / serialise
+│   ├── keys.ts                 # in-memory per-session key custody + masking
+│   └── guard.ts                # origin check, throttle, size-capped body parse
 └── lib/
     ├── agi/
     │   ├── backend.ts          # FRACTALBRAIN_URL, timeouts, callBackend()
     │   ├── pipeline.ts         # perceive → recall → state context builder
     │   ├── history.ts          # Prisma chat persistence (graceful fallback)
     │   ├── types.ts            # Shared client/server types (backend contract)
-    │   ├── api.ts              # Client API wrapper
+    │   ├── api.ts              # Client API wrapper (incl. chatStream)
+    │   ├── sse.ts              # Incremental SSE frame parser (tested)
     │   └── store.ts            # Zustand state store
     ├── models/
     │   ├── registry.ts         # Model definitions & categories
     │   └── providers.ts        # Provider-specific API clients
     ├── db.ts
     └── utils.ts
+
+contracts/
+├── fractalbrain.openapi.json   # the engine's HTTP shape (OpenAPI 3.1, 7 endpoints)
+├── contract.test.ts            # contract ⇄ types ⇄ mock conformance
+└── lib/json-schema-lite.mjs    # validator subset, no dependencies
+mini-services/brain-mock/       # runnable reference engine (dev, CI, demos)
 ```
 
 
@@ -176,8 +195,11 @@ src/
 ## ⚡ Getting Started
 
 ### Prerequisites
-- Node.js 20+ (Bun also works — the repo ships `bun.lock`)
-- FractalBrain backend running on `http://127.0.0.1:8080` (**optional** — without it the dashboard runs in LLM-only mode: chat works, Think/Reflect/Train/Memory report "offline")
+- Node.js 20+ (`package-lock.json` is the lock of record; `bun install` also works and writes its own lock)
+- A FractalBrain engine on `http://127.0.0.1:8080` — **optional at two levels**: without any engine the
+  dashboard runs in LLM-only mode (chat works, Think/Reflect/Train/Memory report "offline"), and
+  `npm run mock:brain` starts the dependency-free reference engine so the fractal side is fully live
+  without the Rust service.
 
 ### Installation
 
@@ -187,17 +209,22 @@ git clone https://github.com/AFKmoney/LiquidBrain.git
 cd LiquidBrain
 
 # Install dependencies (also prepares the Prisma client)
-npm install        # or: bun install
+npm ci             # or: bun install
+
+# Optional: the reference engine — real memory, think, reflect and train numbers
+npm run mock:brain # http://127.0.0.1:8080
 
 # Start the development server
-npm run dev        # or: bun run dev
+npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to see the dashboard.
+Open [http://localhost:3000](http://localhost:3000) to see the dashboard. With the mock running, the
+sidebar shows "online", perceived ideas appear as labelled points inside the fractal window, and
+Think / Reflect / Train return computed numbers instead of the offline defaults.
 
-> **Lockfile note:** `bun.lock` is the lock of record. It predates the `geist` dependency added
-> when fonts moved off Google Fonts, so run `bun install` (or `npm install`, which resolves from
-> the registry) once to refresh it before relying on `bun ci`-style installs.
+> **Lockfile note:** `package-lock.json` is committed and used by CI. The stale `bun.lock` that
+> shipped from the template (it predates the `geist` dependency) was removed; `bun install`
+> regenerates one locally, which is git-ignored.
 
 ### Environment Variables
 
@@ -207,8 +234,8 @@ Copy `.env.example` to `.env` and adjust. `.env` is git-ignored; only `.env.exam
 |--------|----------|---------|
 | `FRACTALBRAIN_URL` | no | Base URL of the FractalBrain engine. Defaults to `http://127.0.0.1:8080`. Every `/api/agi/{state,memory,perceive,think,reflect,train}` proxy reads it. |
 | `DATABASE_URL` | no | SQLite file for chat persistence, resolved **relative to `prisma/`** (`file:../db/custom.db` → `db/custom.db`). Leave unset (or skip `prisma generate`) and the app simply keeps chats in memory for the current page session. |
-| `NVIDIA_API_KEY` | for NVIDIA models | NVIDIA NIM chat / image / TTS / safety. Can also be pasted in the in-app settings panel. |
-| `MINIMAX_API_KEY` | for MiniMax models | MiniMax chat. Also settable in the UI. |
+| `NVIDIA_API_KEY` | for NVIDIA models | NVIDIA NIM chat / image / TTS / safety. Can also be pasted in the in-app settings panel, where it is held by the server for your session only. |
+| `MINIMAX_API_KEY` | for MiniMax models | MiniMax chat. Also settable in the UI (session-scoped). |
 | `ZAI_API_KEY` + `ZAI_BASE_URL` | optional | Lets the Z-AI provider use an OpenAI-compatible endpoint instead of a config file. |
 
 **Z-AI (the default `GLM-5.1` model)** is reached through `z-ai-web-dev-sdk`, which reads
@@ -226,7 +253,30 @@ provider in the model selector instead. The file is git-ignored on purpose.
 3. **Brain Console**: the "Brain Console" button (sidebar) opens live engine metrics plus Think / Reflect / Sync, the **Train** box and the **Sequencer** (perceive → think step programs).
 4. **Reflect**: Run a self-reflection to assess coherence and potentially rewire connections — the bottom bar shows coherence, surprise, confidence, memory utilization and the latest insight.
 5. **Fractal View**: Toggle the Mandelbrot visualization to see the neural substrate in action; concepts that fired during the last think cycle are highlighted.
-6. **Esc** closes the top-most overlay (model selector → fractal view → console).
+6. **Streaming**: replies arrive token by token (`/api/agi/chat` with `stream: true`); the coherence and
+   memory readings update on the first frame, before the answer finishes.
+7. **Provider keys**: the "API Keys" panel in the model selector sends them to `POST /api/agi/keys`, which
+   keeps them in the server process for this browser session. Nothing is written to `localStorage`, the key
+   never appears in a request body again, and the panel only ever shows a mask (`••••••99fe`) plus where the
+   effective key came from (your session or the environment). Restart the server and they are gone.
+8. **Esc** closes the top-most overlay (model selector → fractal view → console).
+
+---
+
+## 🔒 Security model (and what it deliberately is not)
+
+| Control | Where |
+|---|---|
+| Provider keys held in memory per session, masked in responses | `src/lib/server/keys.ts`, `/api/agi/keys` |
+| `HttpOnly`, `SameSite=Strict`, `Partitioned` session cookie; `Secure` when TLS | `src/lib/server/session.ts` |
+| Cross-origin writes rejected (403) | `guard()` in `src/lib/server/guard.ts` |
+| Throttles: 12 chat / 6 media / 20 safety / 60 engine calls per minute per client, with `Retry-After` | `LIMITS` in the same file |
+| Request bodies capped (64 KB; 6 MB where base64 images arrive) and parsed once | `guard()` |
+| Security headers: `nosniff`, `X-Frame-Options: DENY`, `no-referrer`, COOP, `Permissions-Policy`; CSP + HSTS in production | `next.config.ts` |
+
+There is **no authentication**: the dashboard has no accounts, so anyone who can reach the host can chat
+with the environment keys and consume that budget. The throttle bounds the blast radius; it does not
+replace access control, which is the first thing to add before publishing an instance.
 
 ---
 
@@ -249,10 +299,27 @@ The whole layer is best-effort: if Prisma was not generated or the SQLite file i
 
 ```bash
 npm run typecheck   # tsc --noEmit (the build also type-checks now)
-npm run lint        # eslint
-npm test            # node --test on src/**/*.test.ts (type-stripped, no extra toolchain)
+npm run lint        # eslint .
+npm test            # node --test on src/**/*.test.ts + contracts/**/*.test.ts (type-stripped)
+npm run test:contract  # OpenAPI contract ⇄ src/lib/agi/types.ts ⇄ mock only
 npm run check       # all three
+npx next build      # standalone build, fails on any type error
 ```
+
+46 tests cover the backend client, the pipeline, the model registry, the SSE parser, the route guard,
+key custody, and 7 contract-conformance tests: every endpoint the dashboard proxies must be declared,
+nothing declared may go unused, and each response schema must match its TypeScript interface field by
+field. `mini-services/brain-mock` is the reference implementation those tests exercise.
+
+### CI
+
+`.github/workflows/ci.yml` runs on pushes to `main`, pull requests and manual dispatch:
+
+1. **verify** — `npm ci` → `typecheck` → `lint` → `test`.
+2. **build-and-smoke** — `npm run build`, then boots `.next/standalone/server.js` with the mock engine on
+   its own port (`FRACTALBRAIN_URL`) and asserts over HTTP: state is served by the engine, perceive stores
+   a concept, think runs the requested cycles, blank training text still answers 400, and killing the
+   engine degrades to `503` with `"status":"offline"` instead of a 500.
 
 ---
 

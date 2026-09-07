@@ -83,18 +83,18 @@ Gravité : 🔴 bloquant · 🟠 majeur · 🟡 moyen · ⚪ mineur. Statut : �
 | 🟡 14 | `useIsMobile()` écrivait son état dans un `useEffect` (`react-hooks/set-state-in-effect`, 2 erreurs lint) → rendu en cascade sur tous les composants sidebar | `src/hooks/use-mobile.ts` | ✅ réécrit en `useSyncExternalStore` (comportement identique, un seul rendu) |
 | ⚪ | `pipeline` triait **en place** le tableau `concepts` renvoyé par le backend (mutation d'une donnée d'appel) et `memory.concepts.sort()` faisait de même dans la sidebar à chaque rendu | `chat/route.ts:53`, `page.tsx` | ✅ copies défensives + test de non-mutation |
 | ⚪ | Clés de React par index (`key={i}`) sur la liste de chat, `aria-label` absents des boutons icône, `<img>` sans `alt` dans `ModelSelector` | — | ✅ corrigés |
-| 🟡 22 | 42 des 48 primitives `components/ui/**` ne sont importées par aucune ligne applicative ; ~15 dépendances runtime ne sont importées nulle part (`@dnd-kit/*`, `@mdxeditor/editor`, `@tanstack/react-query`, `next-auth`, `next-intl`, `react-markdown`, `react-syntax-highlighter`, `sharp`, `zod`, `uuid`, `framer-motion`, `date-fns`, `@hookform/resolvers`, `@reactuses/core`, `input-otp`…) | script d'analyse d'imports | ⚠️ restant : le retrait casse les primitives vendored qui les importent (cf. §5.6) |
-| 🟠 24 | Le moteur **FractalBrain (Rust)** — qui implémente perceive/think/reflect/memory/train, les embeddings complexes, le LSH et la méta-cognition — est un service externe **absent du dépôt** : `mini-services/` ne contient qu'un `.gitkeep`, et aucun contrat (OpenAPI/types) n'est versionné | `ls mini-services` → `.gitkeep` | ⚠️ restant : c'est le principal risque produit (§5.1) |
+| 🟡 22 | 42 des 48 primitives `components/ui/**` ne sont importées par aucune ligne applicative ; ~15 dépendances runtime ne sont importées nulle part (`@dnd-kit/*`, `@mdxeditor/editor`, `@tanstack/react-query`, `next-auth`, `next-intl`, `react-markdown`, `sharp`, `zod`, `uuid`, `framer-motion`, `date-fns`…) | script d'analyse d'imports | ✅ supprimé : atteignabilité calculée depuis `src/app` + tous les modules non-ui → 41 primitives et 52 paquets retirés (66 dépendances → 15), `src/app/api/route.ts` (« Hello, world! ») supprimé |
+| 🟠 24 | Le moteur **FractalBrain (Rust)** — qui implémente perceive/think/reflect/memory/train, les embeddings complexes, le LSH et la méta-cognition — est un service externe **absent du dépôt** : `mini-services/` ne contient qu'un `.gitkeep`, et aucun contrat (OpenAPI/types) n'est versionné | `ls mini-services` → `.gitkeep` | ✅ contrat versionné (`contracts/fractalbrain.openapi.json`, OpenAPI 3.1, 7 endpoints) + moteur de référence sans dépendance (`mini-services/brain-mock`) + 7 tests de conformité ; le moteur Rust lui-même reste externe (§5.5) |
 
 ### 2.6 Sécurité
 
 | # | Constat | Preuve | Statut |
 |---|---|---|---|
-| 🟠 21 | **Clés API stockées en clair dans `localStorage`** puis relayées dans le *body* de chaque requête (`apiKeys: {…}`) : lisibles par toute XSS, visibles dans le devtools, et susceptibles d'atterrir dans les logs d'un reverse-proxy. Le champ est bien `type="password"` dans l'UI, le stockage ne l'est pas. | `store.ts` (`setApiKey` → `localStorage`), `api.ts` (`chat()` envoie `apiKeys`) | ⚠️ restant — mitigations proposées en §5.3 (variables serveur prioritaires, session signée, non-réémission au client) |
+| 🟠 21 | **Clés API stockées en clair dans `localStorage`** puis relayées dans le *body* de chaque requête (`apiKeys: {…}`) : lisibles par toute XSS, visibles dans le devtools, et susceptibles d'atterrir dans les logs d'un reverse-proxy. Le champ est bien `type="password"` dans l'UI, le stockage ne l'était pas. | `store.ts` (`setApiKey` → `localStorage`), `api.ts` (`chat()` envoie `apiKeys`) | ✅ custody serveur (`src/lib/server/keys.ts`) : Map en mémoire shardée par cookie de session `HttpOnly SameSite=Strict Partitioned`, le client ne reçoit qu'un masque, et tout `apiKeys` passé dans le body est ignoré |
 | 🟡 21 | Une clé enregistrée depuis l'UI ne pouvait **jamais être retirée** : `handleSaveKeys` ignorait les champs vides (`if (value.trim())`), donc effacer le champ puis « Save Keys » laissait la clé en place. | `ModelSelector.tsx` (`handleSaveKeys`) | ✅ le champ vide supprime la clé (store **et** `localStorage`) + mention explicite du stockage sous le bouton |
-| 🟡 21 | Aucune authentification ni rate-limit : `/api/agi/chat` (et image / tts / safety / vision) sont des **proxys ouverts** vers les fournisseurs — quiconque atteint le déploiement consomme les clés du serveur ; le `console.error` du message d'erreur upstream peut fuiter des fragments de réponse dans les logs. | routes `chat`/`image`/`tts`/`safety`/`vision` (aucun garde-fou) | ⚠️ restant (§5.3) |
+| 🟡 21 | Aucune authentification ni rate-limit : `/api/agi/chat` (et image / tts / safety / vision) sont des **proxys ouverts** vers les fournisseurs — quiconque atteint le déploiement consomme les clés du serveur ; le `console.error` du message d'erreur upstream peut fuiter des fragments de réponse dans les logs. | routes `chat`/`image`/`tts`/`safety`/`vision` (aucun garde-fou) | ✅ `src/lib/server/guard.ts` : throttle par fenêtre (12 chat / 6 média / 60 moteur par minute) + `Retry-After`, 403 sur écriture cross-origin, parse JSON unique plafonné (64 KB, 6 MB en vision), message ≤ 32 000 caractères. **Reste** : aucune authentification par compte — le dashboard n'a pas d'utilisateurs (§5.1) |
 | 🟡 21 | `AbortSignal.timeout` absent de l'appel « fire-and-forget » de think ; les GET `/state` et `/memory` laissaient le cache de données de Next s'appliquer. | anciens `state/route.ts`, `chat/route.ts` | ✅ timeout borné (5 s), fetch sortant `cache: "no-store"`, `dynamic = "force-dynamic"` + `revalidate = 0` sur les proxies en lecture |
-| ⚪ 21 | Aucun `Content-Security-Policy`, `X-Frame-Options` ni en-tête de sécurité dans `next.config.ts` ; `robots.txt` présent mais aucune politique de non-indexation de l'API. | `next.config.ts`, `public/robots.txt` | ⚠️ restant (§5.3) |
+| ⚪ 21 | Aucun `Content-Security-Policy`, `X-Frame-Options` ni en-tête de sécurité dans `next.config.ts` ; `robots.txt` présent mais aucune politique de non-indexation de l'API. | `next.config.ts`, `public/robots.txt` | ✅ `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, COOP, `Permissions-Policy` (camera/mic/geo/payment/usb refusés) partout ; CSP + HSTS en production seulement (Turbopack en dev exige `unsafe-eval`) |
 | ⚪ 21 | `.env` était versionné (§2.3) : dans un dépôt public, tout secret futur y atterrirait par inadvertance. | `git show HEAD --stat` listait `.env` | ✅ corrigé (`git rm --cached` + `.env.example`) |
 
 ---
@@ -121,6 +121,18 @@ sur une machine cible ; `server.js` de Next standalone est du Node standard).
 
 **Nettoyage** — `src/app/api/api/**`, `prisma/prisma/**`, `db/db/**`, `tool-results/**`, `download/**`, `.zscripts/dev.pid` supprimés ; `.zscripts/*.sh` rendus portables ; `.env` désindexé + `.env.example` ; README réaligné.
 
+### Round 2 — restitution des 5 chantiers priorisés
+
+**Contrat moteur** — `contracts/fractalbrain.openapi.json` (OpenAPI 3.1 : 7 endpoints, schémas `BrainState` / `ConceptSummary` / `MemoryResponse` / `Perceive` / `Think` / `Reflect` / `Train`, réponses 400/503, `servers[0]` = `DEFAULT_BACKEND_URL`) ; `contracts/lib/json-schema-lite.mjs` (validateur sans dépendance sur le sous-ensemble utilisé) ; `contracts/contract.test.ts` (7 tests : chaque endpoint proxifié est déclaré, aucun déclaré n'est inutilisé, les interfaces TS et le schéma ne peuvent pas diverger — champ par champ, exigence par exigence —, round-trip live contre le mock) ; `mini-services/brain-mock/server.mjs` (moteur de référence : embedding FNV-1a dans le plan complexe, fusion par grille LSH, activation propagée, réflexion et loss dérivés du graphe — `npm run mock:brain`, et importable sur port éphémère par les tests).
+
+**CI** — `.github/workflows/ci.yml` : `verify` (npm ci → typecheck → lint → npm test, donc les tests de contrat) et `build-and-smoke` (npm run build, standalone + mock lancés sur `PORT=8787` avec `FRACTALBRAIN_URL`, puis 8 assertions HTTP dont le 400 de validation et le 503 « moteur absent »). La séquence a été rejouée localement avant push.
+
+**Clés & proxys** — `src/lib/server/session.ts` (résolution unique du session id par requête, cookie `HttpOnly SameSite=Strict Partitioned`, `Secure` iff TLS), `src/lib/server/keys.ts` (custody en mémoire, 3 noms acceptés, masque ≤ moitié de la valeur, copie à la lecture), `src/lib/server/guard.ts` (throttle + origine + taille) et `src/app/api/agi/keys/route.ts` (GET masques / POST stocke / DELETE oublie). Les 9 routes qui lisaient `body.apiKeys` résolvent désormais la session ; `next.config.ts` émet les en-têtes de sécurité. Z-AI accepte enfin une clé saisie dans l'UI (`resolveApiKey` était court-circuité par ce provider).
+
+**Streaming** — `chatCompletionStream()` dans `providers.ts` (SSE OpenAI-compatible, commentaires keep-alive ignorés, arrêt sur `data: [DONE]`, repli whole-text pour le chemin SDK Z-AI) ; `/api/agi/chat` avec `stream: true` renvoie `text/event-stream` (trames `meta` / `delta` / `done`, ou `error` en cours de stream) ; `src/lib/agi/sse.ts` est un parseur incrémental testé, `store.ts` crée le message assistant au premier token, `page.tsx` affiche un caret pendant le flux ; `no-transform` + `X-Accel-Buffering: no` empêchent le buffering intermédiaire.
+
+**Sortie du template** — 41 primitives UI, 52 paquets, `/api` fantôme, `bun.lock` ( remplacé par `package-lock.json` comme lockfile de référence), `@types/node` déclaré explicitement, `prisma` déplacé en devDependencies, paquet renommé `liquidbrain@0.3.0`.
+
 ---
 
 ## 4. Preuves de validation
@@ -129,9 +141,11 @@ sur une machine cible ; `server.js` de Next standalone est du Node standard).
 npx tsc --noEmit      33 erreurs  →  0
 npx eslint .          2 err + 4 warn  →  0 problème
 npx next build        échec (Google Fonts) + typecheck désactivé
-                      →  succès en 7.8 s, « Running TypeScript » inclus,
-                         16 entrées de routes dont 13 /api/agi/* (plus aucune /api/api/*)
-npm test              17/17 tests passés
+                      →  succès, « Finished TypeScript » inclus,
+                         16 entrées de routes dont 14 /api/agi/* (plus aucune /api/api/*,
+                         plus de /api fantôme)
+npm test              round 1 : 17/17 → round 2 : 46/46 (7 tests de contrat, 6 de parseur SSE,
+                      7 de garde, 6 de custody des clés, 9 de registre, 3+4 backend/pipeline)
 ```
 
 Tests de fumée HTTP (serveur de dev + faux moteur FractalBrain sur `:8080`) :
@@ -149,32 +163,72 @@ Tests de fumée HTTP (serveur de dev + faux moteur FractalBrain sur `:8080`) :
 | `FRACTALBRAIN_URL=http://127.0.0.1:8099` + build standalone | `GET /api/agi/state` renvoie le moteur de `:8099` (`model: BrainOn8099`) → la variable d'environnement est bien honorée en production |
 | `GET /` | `200`, rendu serveur contenant « Brain Console », « Fractal View », « Message LiquidBrain », « Ephemeral session » |
 
+**Round 2** — même méthode : dev server + mock sur `:8080` + faux fournisseur OpenAI-compatible sur `:8099` (`ZAI_BASE_URL` pointant dessus, `ZAI_API_KEY` absente de l'environnement pour que seule la custody serveur puisse débloquer l'appel) :
+
+| Appel | Résultat observé |
+|---|---|
+| `POST /api/agi/keys {"ZAI_API_KEY":"zai-fake-key-99fe"}` | `200` `{updated:["ZAI_API_KEY"], keys:[…,{source:"session",masked:"••••••99fe"}]}` + `Set-Cookie: lb_session=…; HttpOnly; SameSite=Strict; Max-Age=43200; Partitioned` |
+| `GET /api/agi/keys` (avec cookie) | masques uniquement — la valeur n'apparaît dans aucune réponse |
+| `POST /api/agi/chat` avec `stream:true` | `event: meta` → 4 × `event: delta` → `event: done {reply:"Fractals recurse through memory."}` : la clé a atteint le fournisseur sans jamais être dans le body |
+| `POST /api/agi/chat` sans stream | même réponse en mode bloquant (parité des deux chemins) |
+| chat avec `{"apiKeys":{"ZAI_API_KEY":"attacker-key"}}` dans le body | `502` « Z-AI is not configured » → le champ est ignoré, le proxy ouvert est fermé |
+| 14 × chat depuis une même IP | 12 × `502` (le budget est consommé par l'appel, pas par le rejet) puis `429` avec `Retry-After` |
+| `POST` avec `origin: https://evil.example` | `403 Cross-origin requests are not allowed on this proxy` |
+| `DELETE /api/agi/keys` puis chat | statut repassé à `none`, le chat retombe sur l'erreur de configuration → la clé était bien liée à la session |
+| en-têtes de `GET /` | `nosniff`, `X-Frame-Options: DENY`, `no-referrer`, COOP, `Permissions-Policy` (CSP ajouté en production uniquement) |
+| séquence moteur via le mock | `perceive ×5` → `memory` 5 concepts étiquetés dans la fenêtre `[-2,1]×[-1.5,1.5]` → `think {cycles:6}` `active_nodes:4` → `reflect` `coherence:0.066667`, `should_rewire:true` |
+| réplique locale des jobs CI | `verify` équivalent vert ; les 8 assertions de `build-and-smoke` vertes sur le build standalone (dont `400` de validation et `503`/`offline` moteur absent) |
+
 ---
 
 ## 5. Reste à faire (priorisé)
 
-1. **Versionner le moteur FractalBrain** (ou au minimum son contrat) : sans lui, Think/Reflect/Train/Memory/vue fractale restent décoratifs. Options : dossier `engine/` (Rust), ou `contracts/fractalbrain.openapi.json` + un mock TypeScript dans `mini-services/brain-mock/` (le stub utilisé pour cet audit peut servir de base) + tests de contrat.
-2. **CI GitHub Actions** : `npm ci → typecheck → lint → test → build`, avec un job `prisma generate && prisma db push` sur une base temporaire (ici le téléchargement des moteurs Prisma est bloqué par le réseau : `binaries.prisma.sh` injoignable — à vérifier côté runners).
-3. **Sécurité des clés** : préférer les variables serveur, ne plus renvoyer `apiKeys` depuis le client, masquer en affichage, ajouter rate-limit + auth (next-auth est déjà dans `package.json`) dès qu'un déploiement est public, et durcir les en-têtes (`CSP`, `X-Frame-Options`).
-4. **Streaming** des réponses LLM (`z-ai-web-dev-sdk` accepte `stream: true`) + bouton Stop, plutôt qu'un spinner de 30 s.
-5. **Tests d'intégration UI** (Testing Library/Vitest) sur les parcours chat + console, et tests HTTP des routes avec un mock du moteur.
-6. **Sortir le dépôt du template** : supprimer les ~15 dépendances runtime et les 42 primitives UI non utilisées (en bloc, avec les imports), retirer `User`/`Post` si l'auth n'arrive pas, réactiver progressivement les règles ESLint (`no-unused-vars` d'abord), trancher `next-intl` (installé, 0 usage) ou documenter l'intention FR/EN.
-7. **Qualité de la persistance** : conversations multi-threads, purge automatique (`DELETE /api/agi/history?before=`), et migration propre plutôt que `db push`.
-8. **Lockfile** : `bun.lock` livré ne contient pas `geist` (ajouté lors du passage des polices en
-   auto-hébergé). `bun install` n'a pas pu être rejoué ici (le bac à sable rejette les certificats TLS
-   du registre : `UNKNOWN_CERTIFICATE_VERIFICATION_ERROR`), donc la régénération reste à faire sur une
-   machine avec `bun` fonctionnel — sinon `npm install` reste supporté.
-9. **Doublons de captures** : `public/screenshots` ne garde que les 5 visuels cités par le README ; envisager un script de régénération.
+Fermés dans ce round 2 : contrat moteur versionné + mock + tests de conformité (§1 de la liste
+précédente), CI GitHub Actions (§2), sécurité des clés + garde-fous des proxys + en-têtes (§3),
+streaming des réponses LLM (§4), sortie du template — primitives, dépendances, `/api` fantôme,
+lockfile (§6 et §8).
 
----
+1. **Avant toute exposition publique** : le dashboard n'a toujours aucun compte utilisateur. Les clés
+   sont shardées par cookie de session et les proxys throttlés, mais « quiconque atteint l'hôte peut
+   converser avec les clés d'environnement du serveur » reste vrai sur un déploiement partagé. Ajouter
+   une authentification (middleware + secret d'instance suffisent ; `next-auth` est parti avec les
+   dépendances mortes) et un `DATABASE_URL` dédié.
+2. **Streaming : bouton Stop** côté client (`AbortController` exposé dans le store) et reprise propre si
+   la connexion tombe à mi-réponse — le serveur sait déjà émettre une trame `error`.
+3. **Tests d'intégration UI** (Testing Library/Vitest) sur les parcours chat + console : aucune suite ne
+   vérifie le rendu du panneau API Keys, le caret de streaming ni le drawer.
+4. **Qualité de la persistance** : fils multiples, purge datée (`DELETE /api/agi/history?before=`),
+   migration propre plutôt que `db push`, et `prisma generate` validé sur les runners — ici le
+   téléchargement des binaires restait bloqué, donc seul le repli `persisted:false` est prouvé.
+5. **Le moteur Rust lui-même** : le contrat est désormais la source de vérité, mais `brain-mock` n'est
+   pas FractalBrain. Versionner l'implémentation (`engine/`) ou publier le service réel reste le
+   principal risque produit ; au passage, `POST /api/reset` du contrat n'a pas d'équivalent exposé à l'UI.
+6. **Règles ESLint** : les 27 règles désactivées par le template ne sont pas toutes réactivées — reprendre
+   `@typescript-eslint/no-unused-vars` puis `react-hooks/exhaustive-deps`. `next-intl` (installé, 0 usage)
+   est retiré ; trancher l'intention FR/EN si elle existe.
+7. **Doublons de captures** : `public/screenshots` ne devrait garder que les 5 visuels cités par le README,
+   avec un script de régénération.
 
 ## 6. Comment revérifier
 
 ```bash
-npm install          # ou bun install
-npm run check        # typecheck + lint + tests
-npx next dev -p 3000 # dashboard
+npm ci                # package-lock.json est le lockfile de référence (bun.lock n'est plus suivi)
+npm run check         # typecheck + lint + 46 tests (dont les 7 tests de contrat)
+npm run mock:brain    # moteur de référence sur :8080 — Ctrl-C pour arrêter
+npx next dev -p 3000  # dashboard
 
-# sans moteur FractalBrain : /api/agi/state → 503 « Backend unreachable » (mode LLM-only)
-# avec un moteur sur :8080 (ou FRACTALBRAIN_URL) : state/memory/think/reflect/train → 200
+# sans moteur : GET /api/agi/state → 503 « Backend unreachable » (mode LLM-only)
+# avec le mock (ou FRACTALBRAIN_URL) : state/memory/think/reflect/train → 200
+
+npm run test:contract # contrat seul, aucun serveur à lancer
+
+curl -s localhost:3000/api/agi/keys | python3 -m json.tool
+#   → des masques, jamais une valeur. Écriture cross-origin → 403, 13ᵉ chat de la minute → 429,
+#     body > 64 Ko → 413, « apiKeys » dans le body → ignoré.
+
+curl -N localhost:3000/api/agi/chat -H 'content-type: application/json' \
+     -d '{"message":"hello","stream":true}'
+#   → event: meta, puis des event: delta, puis event: done
 ```
+
+La CI rejoue exactement ces vérifications : `.github/workflows/ci.yml` (`verify` + `build-and-smoke`).

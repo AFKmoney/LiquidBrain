@@ -92,7 +92,6 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
 
   const statusFor = (name: string) => keyStatus.find((k) => k.name === name);
-  const maskedFor = (name: string) => statusFor(name)?.masked ?? null;
 
   // Filter models
   const filteredModels = MODEL_REGISTRY.filter((m) => {
