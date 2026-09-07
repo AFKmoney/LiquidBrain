@@ -22,13 +22,26 @@ import {
   Cpu,
 } from 'lucide-react';
 
+import type { KeyStatus } from '@/lib/agi/api';
+
 interface ModelSelectorProps {
   selectedModelId: string;
   onSelectModel: (modelId: string) => void;
-  apiKeys: Record<string, string>;
-  onSetApiKey: (keyName: string, value: string) => void;
+  /** Server-side custody: masks only. The real keys never reach this component. */
+  keyStatus: KeyStatus[];
+  /** Resolves false when the server refused the patch (see `message`). */
+  onSaveKeys: (patch: Record<string, string>) => Promise<boolean>;
+  onForgetKeys: () => void;
+  isSaving: boolean;
+  message: string | null;
   onClose: () => void;
 }
+
+const KEY_FIELDS = [
+  { name: 'NVIDIA_API_KEY', label: 'NVIDIA_API_KEY', placeholder: 'nvapi-…' },
+  { name: 'MINIMAX_API_KEY', label: 'MINIMAX_API_KEY', placeholder: 'Optional — MiniMax is also on NVIDIA NIM' },
+  { name: 'ZAI_API_KEY', label: 'ZAI_API_KEY', placeholder: 'Optional — only needed with ZAI_BASE_URL' },
+] as const;
 
 const CATEGORY_ICONS: Record<ModelCategory, React.ReactNode> = {
   chat: <Cpu className="w-4 h-4" />,
@@ -63,17 +76,23 @@ const CATEGORY_BG: Record<ModelCategory, string> = {
 export const ModelSelector: React.FC<ModelSelectorProps> = ({
   selectedModelId,
   onSelectModel,
-  apiKeys,
-  onSetApiKey,
+  keyStatus,
+  onSaveKeys,
+  onForgetKeys,
+  isSaving,
+  message,
   onClose,
 }) => {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<ModelCategory>('chat');
   const [showApiKeys, setShowApiKeys] = useState(false);
-  const [keyInputs, setKeyInputs] = useState<Record<string, string>>({
-    NVIDIA_API_KEY: apiKeys.NVIDIA_API_KEY || '',
-    MINIMAX_API_KEY: apiKeys.MINIMAX_API_KEY || '',
-  });
+  // Deliberately empty: the browser never holds a key, so there is nothing to
+  // prefill. A field left blank is simply not sent, which protects a key that
+  // is already stored from being wiped by an unrelated save.
+  const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
+
+  const statusFor = (name: string) => keyStatus.find((k) => k.name === name);
+  const maskedFor = (name: string) => statusFor(name)?.masked ?? null;
 
   // Filter models
   const filteredModels = MODEL_REGISTRY.filter((m) => {
@@ -86,16 +105,23 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     return matchesCategory && matchesSearch;
   });
 
-  const handleSaveKeys = () => {
-    // An emptied field must clear the stored key, otherwise a key entered once
-    // can never be removed from the browser.
-    for (const [keyName, value] of Object.entries(keyInputs)) {
-      onSetApiKey(keyName, value.trim());
+  const handleSaveKeys = async () => {
+    const patch: Record<string, string> = {};
+    for (const [name, value] of Object.entries(keyInputs)) {
+      const trimmed = (value ?? '').trim();
+      if (trimmed.length > 0) patch[name] = trimmed;
     }
-    setShowApiKeys(false);
+    if (Object.keys(patch).length === 0) {
+      setShowApiKeys(false);
+      return;
+    }
+    if (await onSaveKeys(patch)) {
+      setKeyInputs({});
+      setShowApiKeys(false);
+    }
   };
 
-  const hasNvidiaKey = !!(apiKeys.NVIDIA_API_KEY || keyInputs.NVIDIA_API_KEY);
+  const hasKey = keyStatus.some((k) => k.source !== 'none');
 
   return (
     <div className="absolute inset-0 z-30 bg-[#212121] flex flex-col">
@@ -109,14 +135,14 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 showApiKeys
                   ? 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
-                  : hasNvidiaKey
+                  : hasKey
                   ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                   : 'bg-white/5 text-slate-400 hover:bg-white/10 border border-transparent'
               }`}
             >
               <Key className="w-3.5 h-3.5" />
               API Keys
-              {hasNvidiaKey && <Check className="w-3 h-3" />}
+              {hasKey && <Check className="w-3 h-3" />}
             </button>
             <button
               onClick={onClose}
@@ -137,40 +163,76 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
               </a>
             </p>
             <div className="space-y-2">
-              <div>
-                <label className="text-[11px] text-slate-500 mb-1 block">NVIDIA_API_KEY</label>
-                <input
-                  type="password"
-                  value={keyInputs.NVIDIA_API_KEY}
-                  onChange={(e) =>
-                    setKeyInputs((prev) => ({ ...prev, NVIDIA_API_KEY: e.target.value }))
-                  }
-                  placeholder="nvapi-..."
-                  className="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/5 text-sm text-white placeholder:text-slate-600 outline-none focus:border-cyan-500/30"
-                />
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-500 mb-1 block">MINIMAX_API_KEY</label>
-                <input
-                  type="password"
-                  value={keyInputs.MINIMAX_API_KEY}
-                  onChange={(e) =>
-                    setKeyInputs((prev) => ({ ...prev, MINIMAX_API_KEY: e.target.value }))
-                  }
-                  placeholder="Optional — MiniMax is also on NVIDIA NIM"
-                  className="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/5 text-sm text-white placeholder:text-slate-600 outline-none focus:border-cyan-500/30"
-                />
-              </div>
+              {KEY_FIELDS.map((field) => {
+                const status = statusFor(field.name);
+                return (
+                  <div key={field.name}>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] text-slate-500">{field.label}</label>
+                      <span
+                        className={`text-[10px] ${
+                          status?.source === 'session'
+                            ? 'text-emerald-400'
+                            : status?.source === 'env'
+                              ? 'text-cyan-400'
+                              : 'text-slate-600'
+                        }`}
+                      >
+                        {status?.masked
+                          ? `${status.source === 'env' ? 'from env' : 'held for this session'} ${status.masked}`
+                          : 'not set'}
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={keyInputs[field.name] ?? ''}
+                        onChange={(e) =>
+                          setKeyInputs((prev) => ({ ...prev, [field.name]: e.target.value }))
+                        }
+                        placeholder={status?.masked ? `replace ${status.masked}…` : field.placeholder}
+                        className="min-w-0 flex-1 px-3 py-2 rounded-lg bg-black/30 border border-white/5 text-sm text-white placeholder:text-slate-600 outline-none focus:border-cyan-500/30"
+                      />
+                      {status?.source === 'session' && (
+                        <button
+                          type="button"
+                          onClick={() => void onSaveKeys({ [field.name]: '' })}
+                          className="px-2 py-1 rounded-lg text-[11px] text-slate-400 hover:text-red-300 hover:bg-red-500/10 border border-white/5"
+                        >
+                          Forget
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-            <button
-              onClick={handleSaveKeys}
-              className="w-full py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium transition-colors"
-            >
-              Save Keys
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => void handleSaveKeys()}
+                disabled={isSaving}
+                className="flex-1 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+              >
+                {isSaving ? 'Storing…' : 'Send to server'}
+              </button>
+              {hasKey && (
+                <button
+                  onClick={onForgetKeys}
+                  disabled={isSaving}
+                  className="px-3 py-2 rounded-lg text-xs text-slate-300 hover:text-red-300 hover:bg-red-500/10 border border-white/5 transition-colors"
+                >
+                  Forget all
+                </button>
+              )}
+            </div>
+            {message && <p className="text-[10px] text-slate-400">{message}</p>}
             <p className="text-[10px] text-slate-600 leading-relaxed">
-              Keys live in this browser only (localStorage) and are forwarded per request. Server
-              environment variables take precedence; clear a field and save to forget a key.
+              Keys are held in the server process for this browser session only — never in
+              localStorage, never in a request body, never logged. They disappear when the server
+              restarts. Environment variables (NVIDIA_API_KEY…) are used when no session key is set,
+              and ZAI_BASE_URL must come from the environment.
             </p>
           </div>
         )}
@@ -220,7 +282,11 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           )}
           {filteredModels.map((model) => {
             const isSelected = model.id === selectedModelId;
-            const needsKey = model.requiresApiKey && !apiKeys[model.apiKeyName];
+            // A key from either source satisfies the model; the mask list is the
+            // only key information this component is allowed to have.
+            const needsKey =
+              model.requiresApiKey &&
+              !keyStatus.some((k) => k.name === model.apiKeyName && k.source !== 'none');
             const providerConfig = PROVIDERS[model.provider];
 
             return (

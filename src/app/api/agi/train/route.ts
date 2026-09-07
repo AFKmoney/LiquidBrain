@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/server/guard";
 import { callBackend } from "@/lib/agi/backend";
 import type { TrainResponse } from "@/lib/agi/types";
 
 export async function POST(request: Request) {
-  let body: { text?: string } = {};
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ loss: -1, error: "Invalid JSON body" }, { status: 400 });
-  }
+  const guarded = await guard(request, { scope: "engine" });
+  if (!guarded.ok) return guarded.response;
+  const body = guarded.body as { text?: string };
 
   const text = (body.text ?? "").toString();
   if (text.trim().length === 0) {

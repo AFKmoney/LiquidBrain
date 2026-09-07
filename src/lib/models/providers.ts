@@ -59,11 +59,15 @@ export interface SafetyResponse {
 
 // ─── NVIDIA NIM Provider ─────────────────────────────────────────
 
+/** OpenAI-compatible chat endpoints, shared by the blocking and streaming paths. */
+const NVIDIA_CHAT_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
+const MINIMAX_CHAT_URL = 'https://api.minimax.chat/v1/text/chatcompletion_v2';
+
 async function nvidiaChatCompletion(
   request: ChatCompletionRequest,
   apiKey: string
 ): Promise<ChatCompletionResponse> {
-  const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+  const response = await fetch(NVIDIA_CHAT_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -192,9 +196,9 @@ async function nvidiaSafetyCheck(
  * vars are set we talk to the same OpenAI-compatible endpoint directly, and
  * otherwise fall back to the SDK.
  */
-function zaiEnvConfig(): { baseUrl: string; apiKey: string } | null {
+function zaiEnvConfig(apiKeyOverride = ''): { baseUrl: string; apiKey: string } | null {
   const baseUrl = (process.env.ZAI_BASE_URL || '').replace(/\/+$/, '');
-  const apiKey = process.env.ZAI_API_KEY || '';
+  const apiKey = apiKeyOverride || process.env.ZAI_API_KEY || '';
   return baseUrl && apiKey ? { baseUrl, apiKey } : null;
 }
 
@@ -205,7 +209,8 @@ function flattenContent(content: string | MessageContent[]): string {
 }
 
 async function zaiChatCompletion(
-  request: ChatCompletionRequest
+  request: ChatCompletionRequest,
+  apiKey = ''
 ): Promise<ChatCompletionResponse> {
   const messages = request.messages.map((m) => ({
     role: m.role as 'system' | 'user' | 'assistant',
@@ -219,7 +224,7 @@ async function zaiChatCompletion(
     thinking: { type: 'disabled' as const },
   };
 
-  const env = zaiEnvConfig();
+  const env = zaiEnvConfig(apiKey);
   if (env) {
     const response = await fetch(`${env.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -285,7 +290,7 @@ async function minimaxChatCompletion(
   request: ChatCompletionRequest,
   apiKey: string
 ): Promise<ChatCompletionResponse> {
-  const response = await fetch('https://api.minimax.chat/v1/text/chatcompletion_v2', {
+  const response = await fetch(MINIMAX_CHAT_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -324,7 +329,8 @@ export async function chatCompletion(
       return nvidiaChatCompletion(request, apiKey);
     }
     case 'z-ai': {
-      return zaiChatCompletion(request);
+      // Z-AI works without a key via its SDK, so no require-check here.
+      return zaiChatCompletion(request, resolveApiKey(model, apiKeys));
     }
     case 'minimax': {
       const apiKey = resolveApiKey(model, apiKeys);
@@ -336,9 +342,160 @@ export async function chatCompletion(
   }
 }
 
+export interface StreamError extends Error {
+  /** True when the provider refused the stream itself (not a model error). */
+  unsupported?: boolean;
+}
+
 /**
- * Resolve the API key for a model, preferring the key entered in the UI
- * and falling back to the server environment.
+ * OpenAI-compatible SSE reader: yields each `choices[0].delta.content` as it
+ * arrives and stops at `data: [DONE]`. Providers are free to interleave blank
+ * heartbeats (`: ping`) and comments, which are skipped.
+ */
+async function* readSseDeltas(body: ReadableStream<Uint8Array>, label: string): AsyncGenerator<string, void, void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf('\n');
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (line.startsWith('data:')) {
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') return;
+          try {
+            const chunk = JSON.parse(payload) as {
+              choices?: Array<{ delta?: { content?: string | null } }>;
+              error?: { message?: string };
+            };
+            if (chunk.error?.message) throw new Error(`${label} stream error: ${chunk.error.message.slice(0, 300)}`);
+            const delta = chunk.choices?.[0]?.delta?.content;
+            if (typeof delta === 'string' && delta.length > 0) yield delta;
+          } catch (error) {
+            // A malformed keep-alive line is noise; a thrown provider error is not.
+            if (error instanceof SyntaxError) continue;
+            throw error;
+          }
+        }
+        newline = buffer.indexOf('\n');
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function* openAiCompatibleStream(
+  url: string,
+  apiKey: string,
+  payload: Record<string, unknown>,
+  label: string,
+  extraHeaders: Record<string, string> = {}
+): AsyncGenerator<string, void, void> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      Authorization: `Bearer ${apiKey}`,
+      ...extraHeaders,
+    },
+    body: JSON.stringify({ ...payload, stream: true }),
+    signal: AbortSignal.timeout(180_000),
+  });
+  if (!response.ok || !response.body) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`${label} API Error (${response.status}): ${detail.slice(0, 400)}`);
+  }
+  yield* readSseDeltas(response.body, label);
+}
+
+/**
+ * Streaming counterpart of {@link chatCompletion}: text deltas as they arrive.
+ *
+ * Providers that only expose a blocking call (the Z-AI SDK path, which reads a
+ * `.z-ai-config` file from disk) fall back to one whole-text chunk instead of
+ * failing, so the UI can always render incrementally.
+ */
+export async function* chatCompletionStream(
+  model: AIModel,
+  request: ChatCompletionRequest,
+  apiKeys: Record<string, string>
+): AsyncGenerator<string, void, void> {
+  request.model = model.id;
+  const messages = request.messages.map((m) => ({ role: m.role, content: m.content }));
+
+  switch (model.provider) {
+    case 'nvidia': {
+      const apiKey = resolveApiKey(model, apiKeys);
+      if (!apiKey) throw new Error('NVIDIA API key required. Get one at build.nvidia.com');
+      yield* openAiCompatibleStream(
+        NVIDIA_CHAT_URL,
+        apiKey,
+        {
+          model: request.model,
+          messages,
+          temperature: request.temperature ?? 0.7,
+          max_tokens: request.max_tokens ?? 1024,
+          top_p: request.top_p ?? 0.9,
+        },
+        'NVIDIA'
+      );
+      return;
+    }
+    case 'minimax': {
+      const apiKey = resolveApiKey(model, apiKeys);
+      if (!apiKey) throw new Error('MiniMax API key required');
+      yield* openAiCompatibleStream(
+        MINIMAX_CHAT_URL,
+        apiKey,
+        {
+          model: request.model,
+          messages,
+          temperature: request.temperature ?? 0.7,
+          max_tokens: request.max_tokens ?? 1024,
+        },
+        'MiniMax'
+      );
+      return;
+    }
+    case 'z-ai': {
+      const env = zaiEnvConfig(resolveApiKey(model, apiKeys));
+      if (env) {
+        yield* openAiCompatibleStream(
+          `${env.baseUrl}/chat/completions`,
+          env.apiKey,
+          {
+            model: request.model,
+            messages: messages.map((m) => ({ ...m, content: flattenContent(m.content) })),
+            temperature: request.temperature ?? 0.8,
+            max_tokens: request.max_tokens ?? 512,
+            thinking: { type: 'disabled' },
+          },
+          'Z-AI',
+          { 'X-Z-AI-From': 'Z' }
+        );
+        return;
+      }
+      // SDK fallback: no streaming, so emit the completed reply in one chunk.
+      const once = await zaiChatCompletion(request, resolveApiKey(model, apiKeys));
+      const text = once.choices[0]?.message?.content || '';
+      if (text) yield text;
+      return;
+    }
+    default:
+      throw new Error(`Unknown provider: ${model.provider}`);
+  }
+}
+
+/**
+ * Resolve the API key for a model: the key held for this session first (see
+ * `src/lib/server/keys.ts`), then the server environment.
  */
 function resolveApiKey(model: AIModel, apiKeys: Record<string, string>): string {
   const envKey = model.provider === 'nvidia'

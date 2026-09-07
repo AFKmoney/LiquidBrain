@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/server/guard";
 import { callBackend } from "@/lib/agi/backend";
 import type { ThinkResponse } from "@/lib/agi/types";
 
 export async function POST(request: Request) {
-  let body: { cycles?: number } = {};
-  try {
-    body = await request.json();
-  } catch {
-    // tolerate empty bodies: fall back to the default cycle count
-  }
+  const guarded = await guard(request, { scope: "engine" });
+  if (!guarded.ok) return guarded.response;
+  // An empty body is fine: the default cycle count applies.
+  const body = guarded.body as { cycles?: number };
 
   const cycles = Math.min(Math.max(Number(body.cycles) || 5, 1), 50);
 

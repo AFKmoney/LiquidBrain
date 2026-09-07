@@ -53,10 +53,14 @@ export default function Home() {
   const selectedModelId = useAgiStore((s) => s.selectedModelId);
   const selectedModel = useAgiStore((s) => s.selectedModel);
   const modelCategory = useAgiStore((s) => s.modelCategory);
-  const apiKeys = useAgiStore((s) => s.apiKeys);
+  const keyStatus = useAgiStore((s) => s.keyStatus);
   const showModelSelector = useAgiStore((s) => s.showModelSelector);
   const setSelectedModel = useAgiStore((s) => s.setSelectedModel);
-  const setApiKey = useAgiStore((s) => s.setApiKey);
+  // Keys are held by the server for this session; the UI only ever sees masks.
+  const saveApiKeys = useAgiStore((s) => s.saveApiKeys);
+  const forgetAllKeys = useAgiStore((s) => s.forgetAllKeys);
+  const isSavingKeys = useAgiStore((s) => s.isSavingKeys);
+  const keyMessage = useAgiStore((s) => s.keyMessage);
   const toggleModelSelector = useAgiStore((s) => s.toggleModelSelector);
 
   const [showViz, setShowViz] = useState(false);
@@ -319,8 +323,11 @@ export default function Home() {
           <ModelSelector
             selectedModelId={selectedModelId}
             onSelectModel={setSelectedModel}
-            apiKeys={apiKeys}
-            onSetApiKey={setApiKey}
+            keyStatus={keyStatus}
+            onSaveKeys={saveApiKeys}
+            onForgetKeys={forgetAllKeys}
+            isSaving={isSavingKeys}
+            message={keyMessage}
             onClose={toggleModelSelector}
           />
         )}
@@ -413,6 +420,7 @@ export default function Home() {
 function ChatPanel() {
   const chatMessages = useAgiStore((s) => s.chatMessages);
   const isChatLoading = useAgiStore((s) => s.isChatLoading);
+  const isStreamingReply = useAgiStore((s) => s.isStreamingReply);
   const chatError = useAgiStore((s) => s.chatError);
   const persistenceEnabled = useAgiStore((s) => s.persistenceEnabled);
   const sendChat = useAgiStore((s) => s.sendChat);
@@ -461,6 +469,9 @@ function ChatPanel() {
                   <div className="flex-1 min-w-0 pt-0.5">
                     <div className="text-[15px] text-slate-200 leading-7 whitespace-pre-wrap break-words">
                       {msg.content}
+                      {isStreamingReply && i === chatMessages.length - 1 && (
+                        <span className="inline-block w-[3px] h-4 bg-cyan-400/80 ml-1 align-middle animate-pulse" />
+                      )}
                     </div>
                   </div>
                 </div>
@@ -480,7 +491,7 @@ function ChatPanel() {
               )}
             </div>
           ))}
-          {isChatLoading && (
+          {isChatLoading && !isStreamingReply && (
             <div className="flex gap-3 mb-5">
               <div className="w-7 h-7 rounded-sm bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center shrink-0">
                 <Brain className="w-4 h-4 text-white" />

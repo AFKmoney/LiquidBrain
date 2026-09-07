@@ -1,9 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
-import {
-  agiApi,
-} from './api';
+import { agiApi, type KeyStatus } from './api';
 import type {
   BrainState,
   MemoryResponse,
@@ -13,7 +11,6 @@ import type {
 } from './types';
 import { AIModel, ModelCategory, MODEL_REGISTRY, getModelById } from '@/lib/models/registry';
 
-const STORAGE_KEYS = 'liquidbrain_api_keys';
 const STORAGE_MODEL = 'liquidbrain_model';
 
 // Default brain state for offline mode
@@ -42,16 +39,6 @@ function readStoredModelId(): string {
     /* private mode / storage disabled */
   }
   return DEFAULT_MODEL_ID;
-}
-
-function readStoredApiKeys(): Record<string, string> {
-  if (typeof window === 'undefined') return {};
-  try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '{}');
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, string>) : {};
-  } catch {
-    return {};
-  }
 }
 
 /**
@@ -112,8 +99,13 @@ interface AgiStore {
   selectedModelId: string;
   selectedModel: AIModel | undefined;
   modelCategory: ModelCategory;
-  apiKeys: Record<string, string>;
+  /** Server-side key custody: masks only, never a key. */
+  keyStatus: KeyStatus[];
+  isSavingKeys: boolean;
+  keyMessage: string | null;
+  keyStorageNote: string | null;
   showModelSelector: boolean;
+  isStreamingReply: boolean;
 
   // Image generation
   imagePrompt: string;
@@ -150,7 +142,9 @@ interface AgiStore {
   // Model actions
   setSelectedModel: (modelId: string) => void;
   setModelCategory: (category: ModelCategory) => void;
-  setApiKey: (keyName: string, value: string) => void;
+  saveApiKeys: (patch: Record<string, string>) => Promise<boolean>;
+  forgetAllKeys: () => Promise<void>;
+  refreshKeyStatus: () => Promise<void>;
   toggleModelSelector: () => void;
 
   // Specialized actions
@@ -188,8 +182,12 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   selectedModelId: DEFAULT_MODEL_ID,
   selectedModel: MODEL_REGISTRY.find((m) => m.id === DEFAULT_MODEL_ID),
   modelCategory: 'chat',
-  apiKeys: {},
+  keyStatus: [],
+  isSavingKeys: false,
+  keyMessage: null,
+  keyStorageNote: null,
   showModelSelector: false,
+  isStreamingReply: false,
 
   // Image generation
   imagePrompt: '',
@@ -212,7 +210,7 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
 
   /** One-shot bootstrap: restore prefs, then probe state / memory / history. */
   connect: async () => {
-    set({ apiKeys: readStoredApiKeys() });
+    void get().refreshKeyStatus();
     const modelId = readStoredModelId();
     if (modelId !== get().selectedModelId) {
       get().setSelectedModel(modelId);
@@ -272,44 +270,83 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   },
 
   sendChat: async (message: string) => {
-    const { selectedModelId, apiKeys } = get();
+    const { selectedModelId } = get();
     const userMsg: ChatMessage = {
       role: 'user',
       content: message,
       timestamp: Date.now(),
     };
-    set((s) => ({
-      chatMessages: [...s.chatMessages, userMsg],
+    set((state) => ({
+      chatMessages: [...state.chatMessages, userMsg],
       isChatLoading: true,
+      isStreamingReply: false,
       chatError: null,
     }));
 
+    // The assistant turn is created by the first token rather than up front, so a
+    // provider that fails instantly leaves no empty bubble behind.
+    let streaming = false;
+    const pushDelta = (text: string) =>
+      set((state) => {
+        const messages = [...state.chatMessages];
+        if (!streaming) {
+          streaming = true;
+          messages.push({ role: 'assistant', content: text, timestamp: Date.now() });
+          return { chatMessages: messages, isStreamingReply: true };
+        }
+        const last = messages[messages.length - 1];
+        messages[messages.length - 1] = { ...last, content: last.content + text };
+        return { chatMessages: messages };
+      });
+
     try {
-      const response = await agiApi.chat(message, selectedModelId, apiKeys);
-      const assistantMsg: ChatMessage = {
-        role: 'assistant',
-        content: response.reply,
-        timestamp: Date.now(),
-      };
-      set((s) => ({
-        chatMessages: [...s.chatMessages, assistantMsg],
-        isChatLoading: false,
-        brainState: {
-          ...s.brainState,
-          coherence: response.coherence,
-          memory_concepts: response.memory_size,
-        },
-      }));
+      const response = await agiApi.chatStream(message, selectedModelId, {
+        onDelta: pushDelta,
+        onMeta: (meta) =>
+          set((state) => ({
+            // Coherence and memory move before the reply finishes, so the
+            // fractal view reacts while the text is still arriving.
+            brainState: {
+              ...state.brainState,
+              coherence: meta.coherence,
+              memory_concepts: meta.memory_size,
+            },
+          })),
+      });
+
+      set((state) => {
+        const messages = [...state.chatMessages];
+        const final = { role: 'assistant' as const, content: response.reply, timestamp: Date.now() };
+        if (streaming) messages[messages.length - 1] = { ...messages[messages.length - 1], ...final };
+        else messages.push(final);
+        return {
+          chatMessages: messages,
+          isChatLoading: false,
+          isStreamingReply: false,
+          brainState: {
+            ...state.brainState,
+            coherence: response.coherence,
+            memory_concepts: response.memory_size,
+          },
+        };
+      });
       // The pipeline already stored a memory trace + ran think cycles.
       get().fetchMemory();
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Unknown error';
-      set((s) => ({
+      set((state) => ({
         isChatLoading: false,
+        isStreamingReply: false,
         chatError: detail,
+        // A partial reply stays visible (it really was streamed); an empty
+        // placeholder is dropped so the transcript shows only what happened.
+        chatMessages:
+          streaming && state.chatMessages[state.chatMessages.length - 1]?.content === ''
+            ? state.chatMessages.slice(0, -1)
+            : state.chatMessages,
         // Only the transport failing means we are disconnected; a 502
         // from the model provider does not.
-        isOnline: /502|Model error|API key/i.test(detail) ? s.isOnline : false,
+        isOnline: /502|Model error|API key/i.test(detail) ? state.isOnline : false,
       }));
     }
   },
@@ -414,23 +451,54 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
     set({ modelCategory: category });
   },
 
-  setApiKey: (keyName: string, value: string) => {
-    const trimmed = value.trim();
-    set((s) => {
-      const next = { ...s.apiKeys };
-      if (trimmed) next[keyName] = trimmed;
-      else delete next[keyName];
-      return { apiKeys: next };
-    });
-    // Persist to localStorage so the key survives reloads (client-side only —
-    // it is never stored in a cookie or sent to our logs).
+  /**
+   * Hand keys to the server, which keeps them for this session only. Only the
+   * fields present in `patch` change, so an untouched input can never wipe a
+   * stored key; send '' to forget one.
+   */
+  saveApiKeys: async (patch: Record<string, string>) => {
+    set({ isSavingKeys: true, keyMessage: null });
     try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '{}');
-      if (trimmed) stored[keyName] = trimmed;
-      else delete stored[keyName];
-      localStorage.setItem(STORAGE_KEYS, JSON.stringify(stored));
+      const result = await agiApi.saveKeys(patch);
+      set({
+        isSavingKeys: false,
+        keyStatus: result.keys,
+        keyMessage:
+          result.updated.length > 0
+            ? `${result.updated.length} key field(s) updated on the server`
+            : 'Nothing to save',
+      });
+      return true;
+    } catch (error) {
+      set({
+        isSavingKeys: false,
+        keyMessage: error instanceof Error ? error.message : 'Could not store the key',
+      });
+      return false;
+    }
+  },
+
+  forgetAllKeys: async () => {
+    set({ isSavingKeys: true });
+    try {
+      await agiApi.forgetKeys();
+      set({ isSavingKeys: false, keyStatus: [], keyMessage: 'Keys forgotten for this session' });
+    } catch (error) {
+      set({
+        isSavingKeys: false,
+        keyMessage: error instanceof Error ? error.message : 'Could not forget the keys',
+      });
+    }
+  },
+
+  refreshKeyStatus: async () => {
+    try {
+      const status = await agiApi.getKeyStatus();
+      set({ keyStatus: status.keys, keyStorageNote: status.storage });
     } catch {
-      /* storage disabled */
+      // Key custody is optional: an unreachable /keys route must not break the
+      // dashboard, it only means the provider list stays empty.
+      set({ keyStatus: [] });
     }
   },
 
@@ -449,17 +517,13 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   },
 
   generateImage: async (prompt: string) => {
-    const { selectedModelId, apiKeys } = get();
+    const { selectedModelId } = get();
     set({ isImageGenerating: true, imageError: null });
     try {
       const res = await fetch('/api/agi/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt,
-          model: selectedModelId,
-          apiKeys,
-        }),
+        body: JSON.stringify({ prompt, model: selectedModelId }),
       });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `Image generation failed (${res.status})`);
@@ -474,17 +538,13 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   },
 
   generateTTS: async (text: string) => {
-    const { selectedModelId, apiKeys } = get();
+    const { selectedModelId } = get();
     set({ isTTSGenerating: true });
     try {
       const res = await fetch('/api/agi/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          model: selectedModelId,
-          apiKeys,
-        }),
+        body: JSON.stringify({ text, model: selectedModelId }),
       });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `TTS failed (${res.status})`);
@@ -496,17 +556,13 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   },
 
   checkSafety: async (text: string) => {
-    const { selectedModelId, apiKeys } = get();
+    const { selectedModelId } = get();
     set({ isSafetyChecking: true });
     try {
       const res = await fetch('/api/agi/safety', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          model: selectedModelId,
-          apiKeys,
-        }),
+        body: JSON.stringify({ text, model: selectedModelId }),
       });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `Safety check failed (${res.status})`);
@@ -518,7 +574,7 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   },
 
   analyzeImage: async (imageUrl: string, prompt?: string) => {
-    const { selectedModelId, apiKeys } = get();
+    const { selectedModelId } = get();
     set({ isVisionAnalyzing: true });
     try {
       const res = await fetch('/api/agi/vision', {
@@ -528,7 +584,6 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
           imageUrl,
           prompt: prompt || 'Describe what you see in this image in detail.',
           model: selectedModelId,
-          apiKeys,
         }),
       });
       const data = await res.json();

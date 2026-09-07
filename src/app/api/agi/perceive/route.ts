@@ -1,17 +1,12 @@
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/server/guard";
 import { callBackend } from "@/lib/agi/backend";
 import type { PerceiveResponse } from "@/lib/agi/types";
 
 export async function POST(request: Request) {
-  let body: { input?: string; message?: string } = {};
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { embedding_dim: 0, perceived: false, memory_stored: false, error: "Invalid JSON body" },
-      { status: 400 }
-    );
-  }
+  const guarded = await guard(request, { scope: "engine" });
+  if (!guarded.ok) return guarded.response;
+  const body = guarded.body as { input?: string; message?: string };
 
   const input = (body.input ?? body.message ?? "").toString();
   if (input.trim().length === 0) {

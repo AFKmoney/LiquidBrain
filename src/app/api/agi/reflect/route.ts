@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/server/guard";
 import { callBackend } from "@/lib/agi/backend";
 import type { ReflectResponse } from "@/lib/agi/types";
 
@@ -11,7 +12,9 @@ const EMPTY: ReflectResponse & { error?: string } = {
   memory_utilization: 0,
 };
 
-export async function POST() {
+export async function POST(request: Request) {
+  const guarded = await guard(request, { scope: "engine" });
+  if (!guarded.ok) return guarded.response;
   const result = await callBackend<ReflectResponse>("/api/reflect", {
     method: "POST",
     body: {},
