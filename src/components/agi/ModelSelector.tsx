@@ -3,27 +3,22 @@
 import React, { useState } from 'react';
 import {
   MODEL_REGISTRY,
-  AIModel,
   ModelCategory,
   CATEGORIES,
   getCategoryLabel,
   PROVIDERS,
-  ProviderId,
 } from '@/lib/models/registry';
 import {
-  Brain,
-  ChevronRight,
   Search,
   X,
   Key,
   Check,
   Eye,
-  Image,
+  Image as ImageIcon,
   Video,
   Mic,
   Shield,
   Settings,
-  Sparkles,
   Cpu,
 } from 'lucide-react';
 
@@ -38,7 +33,7 @@ interface ModelSelectorProps {
 const CATEGORY_ICONS: Record<ModelCategory, React.ReactNode> = {
   chat: <Cpu className="w-4 h-4" />,
   vision: <Eye className="w-4 h-4" />,
-  'image-gen': <Image className="w-4 h-4" />,
+  'image-gen': <ImageIcon className="w-4 h-4" />,
   'video-gen': <Video className="w-4 h-4" />,
   tts: <Mic className="w-4 h-4" />,
   safety: <Shield className="w-4 h-4" />,
@@ -92,10 +87,10 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   });
 
   const handleSaveKeys = () => {
+    // An emptied field must clear the stored key, otherwise a key entered once
+    // can never be removed from the browser.
     for (const [keyName, value] of Object.entries(keyInputs)) {
-      if (value.trim()) {
-        onSetApiKey(keyName, value.trim());
-      }
+      onSetApiKey(keyName, value.trim());
     }
     setShowApiKeys(false);
   };
@@ -173,6 +168,10 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             >
               Save Keys
             </button>
+            <p className="text-[10px] text-slate-600 leading-relaxed">
+              Keys live in this browser only (localStorage) and are forwarded per request. Server
+              environment variables take precedence; clear a field and save to forget a key.
+            </p>
           </div>
         )}
 

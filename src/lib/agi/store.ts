@@ -2,14 +2,19 @@
 
 import { create } from 'zustand';
 import {
+  agiApi,
+} from './api';
+import type {
   BrainState,
   MemoryResponse,
   ReflectResponse,
   ChatMessage,
   ThinkResponse,
-  agiApi,
-} from './api';
-import { AIModel, ModelCategory, MODEL_REGISTRY, getModelById, getCategoryLabel, CATEGORIES } from '@/lib/models/registry';
+} from './types';
+import { AIModel, ModelCategory, MODEL_REGISTRY, getModelById } from '@/lib/models/registry';
+
+const STORAGE_KEYS = 'liquidbrain_api_keys';
+const STORAGE_MODEL = 'liquidbrain_model';
 
 // Default brain state for offline mode
 const DEFAULT_BRAIN_STATE: BrainState = {
@@ -23,22 +28,66 @@ const DEFAULT_BRAIN_STATE: BrainState = {
   last_insight: null,
 };
 
+const DEFAULT_MODEL_ID = 'z-ai/glm-5.1';
+
+/** How many salient concepts are highlighted as "active" after a think cycle. */
+const ACTIVE_NODE_HIGHLIGHT = 6;
+
+function readStoredModelId(): string {
+  if (typeof window === 'undefined') return DEFAULT_MODEL_ID;
+  try {
+    const stored = localStorage.getItem(STORAGE_MODEL);
+    if (stored && getModelById(stored)) return stored;
+  } catch {
+    /* private mode / storage disabled */
+  }
+  return DEFAULT_MODEL_ID;
+}
+
+function readStoredApiKeys(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '{}');
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The Rust engine only reports how many nodes fired, not which ones, so the
+ * dashboard approximates "most active" with the most-accessed memory concepts.
+ * This keeps the fractal highlight honest instead of permanently empty.
+ */
+function activeNodesFromMemory(memory: MemoryResponse): number[] {
+  return [...memory.concepts]
+    .sort(
+      (a, b) =>
+        b.access_count - a.access_count || b.salience - a.salience
+    )
+    .slice(0, ACTIVE_NODE_HIGHLIGHT)
+    .map((c) => c.id);
+}
+
 interface AgiStore {
   // Connection
   isOnline: boolean;
   isConnecting: boolean;
 
-  // Brain state (polled every 3s)
+  // Brain state (polled)
   brainState: BrainState;
   lastStateUpdate: number;
 
-  // Memory (polled every 5s)
+  // Memory (polled)
   memory: MemoryResponse;
   lastMemoryUpdate: number;
 
   // Chat
   chatMessages: ChatMessage[];
   isChatLoading: boolean;
+  chatError: string | null;
+  historyLoaded: boolean;
+  persistenceEnabled: boolean;
 
   // Reflection
   lastReflection: ReflectResponse | null;
@@ -65,12 +114,12 @@ interface AgiStore {
   modelCategory: ModelCategory;
   apiKeys: Record<string, string>;
   showModelSelector: boolean;
-  showSettings: boolean;
 
   // Image generation
   imagePrompt: string;
   generatedImages: Array<{ url?: string; b64_json?: string; prompt: string }>;
   isImageGenerating: boolean;
+  imageError: string | null;
 
   // TTS
   isTTSGenerating: boolean;
@@ -78,7 +127,7 @@ interface AgiStore {
 
   // Safety
   isSafetyChecking: boolean;
-  safetyResult: { is_safe: boolean; violation?: string; categories?: Record<string, { is_safe: boolean; confidence: number }> } | null;
+  safetyResult: { is_safe: boolean; violation?: string | null; categories?: Record<string, { is_safe: boolean; confidence: number }> } | null;
 
   // Vision
   isVisionAnalyzing: boolean;
@@ -86,9 +135,12 @@ interface AgiStore {
   visionImageUrl: string;
 
   // Actions
+  connect: () => Promise<void>;
   fetchState: () => Promise<void>;
   fetchMemory: () => Promise<void>;
+  loadHistory: () => Promise<void>;
   sendChat: (message: string) => Promise<void>;
+  clearChat: () => Promise<void>;
   triggerThink: (cycles?: number) => Promise<void>;
   triggerReflect: () => Promise<void>;
   triggerTrain: (text: string) => Promise<void>;
@@ -100,7 +152,6 @@ interface AgiStore {
   setModelCategory: (category: ModelCategory) => void;
   setApiKey: (keyName: string, value: string) => void;
   toggleModelSelector: () => void;
-  toggleSettings: () => void;
 
   // Specialized actions
   generateImage: (prompt: string) => Promise<void>;
@@ -120,6 +171,9 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   lastMemoryUpdate: 0,
   chatMessages: [],
   isChatLoading: false,
+  chatError: null,
+  historyLoaded: false,
+  persistenceEnabled: false,
   lastReflection: null,
   isReflecting: false,
   lastThinkResult: null,
@@ -130,18 +184,18 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   sequencerStep: 0,
   mostActiveNodes: [],
 
-  // Model selection defaults
-  selectedModelId: 'z-ai/glm-5.1',
-  selectedModel: MODEL_REGISTRY.find(m => m.id === 'z-ai/glm-5.1'),
+  // Model selection defaults (persisted choice wins over the built-in default)
+  selectedModelId: DEFAULT_MODEL_ID,
+  selectedModel: MODEL_REGISTRY.find((m) => m.id === DEFAULT_MODEL_ID),
   modelCategory: 'chat',
   apiKeys: {},
   showModelSelector: false,
-  showSettings: false,
 
   // Image generation
   imagePrompt: '',
   generatedImages: [],
   isImageGenerating: false,
+  imageError: null,
 
   // TTS
   isTTSGenerating: false,
@@ -156,25 +210,31 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   visionResult: null,
   visionImageUrl: '',
 
+  /** One-shot bootstrap: restore prefs, then probe state / memory / history. */
+  connect: async () => {
+    set({ apiKeys: readStoredApiKeys() });
+    const modelId = readStoredModelId();
+    if (modelId !== get().selectedModelId) {
+      get().setSelectedModel(modelId);
+    }
+    await Promise.all([get().fetchState(), get().fetchMemory(), get().loadHistory()]);
+  },
+
   fetchState: async () => {
     try {
       const state = await agiApi.getState();
       set({
         brainState: state,
-        isOnline: true,
+        isOnline: state.status !== 'offline' && state.status !== 'error',
         isConnecting: false,
         lastStateUpdate: Date.now(),
       });
     } catch {
-      const wasOnline = get().isOnline;
       set({
         isOnline: false,
         isConnecting: false,
         brainState: { ...DEFAULT_BRAIN_STATE, status: 'offline' },
       });
-      if (wasOnline) {
-        console.warn('[AGI] Backend disconnected');
-      }
     }
   },
 
@@ -184,10 +244,30 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
       set({
         memory,
         lastMemoryUpdate: Date.now(),
-        isOnline: true,
       });
     } catch {
-      // Silently fail
+      // Backend offline: keep the last known concepts, stay quiet.
+    }
+  },
+
+  /** Restore the last conversation from SQLite (no-op when DB is unavailable). */
+  loadHistory: async () => {
+    try {
+      const { messages, persisted } = await agiApi.getHistory(40);
+      set((s) => ({
+        persistenceEnabled: persisted,
+        historyLoaded: true,
+        chatMessages:
+          s.chatMessages.length > 0
+            ? s.chatMessages
+            : messages.map((m) => ({
+                role: m.role,
+                content: m.content,
+                timestamp: m.timestamp,
+              })),
+      }));
+    } catch {
+      set({ historyLoaded: true });
     }
   },
 
@@ -201,6 +281,7 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
     set((s) => ({
       chatMessages: [...s.chatMessages, userMsg],
       isChatLoading: true,
+      chatError: null,
     }));
 
     try {
@@ -219,17 +300,27 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
           memory_concepts: response.memory_size,
         },
       }));
-    } catch {
-      const errorMsg: ChatMessage = {
-        role: 'assistant',
-        content: '⚠️ Connection lost. Attempting to reconnect...',
-        timestamp: Date.now(),
-      };
+      // The pipeline already stored a memory trace + ran think cycles.
+      get().fetchMemory();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unknown error';
       set((s) => ({
-        chatMessages: [...s.chatMessages, errorMsg],
         isChatLoading: false,
-        isOnline: false,
+        chatError: detail,
+        // Only the transport failing means we are disconnected; a 502
+        // from the model provider does not.
+        isOnline: /502|Model error|API key/i.test(detail) ? s.isOnline : false,
       }));
+    }
+  },
+
+  /** Clear the transcript locally and on the server. */
+  clearChat: async () => {
+    set({ chatMessages: [], chatError: null });
+    try {
+      await agiApi.clearHistory();
+    } catch {
+      /* local clear already happened */
     }
   },
 
@@ -239,8 +330,15 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
       const result = await agiApi.think(cycles);
       set({ lastThinkResult: result, isThinking: false });
       get().fetchState();
-    } catch {
-      set({ isThinking: false });
+      // Highlight the concepts that were most live during the cycle.
+      void get().fetchMemory().then(() => {
+        set({ mostActiveNodes: activeNodesFromMemory(get().memory) });
+      });
+    } catch (error) {
+      set({
+        isThinking: false,
+        chatError: error instanceof Error ? error.message : 'Think cycle failed',
+      });
     }
   },
 
@@ -250,8 +348,11 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
       const reflection = await agiApi.reflect();
       set({ lastReflection: reflection, isReflecting: false });
       get().fetchState();
-    } catch {
-      set({ isReflecting: false });
+    } catch (error) {
+      set({
+        isReflecting: false,
+        chatError: error instanceof Error ? error.message : 'Reflection failed',
+      });
     }
   },
 
@@ -262,8 +363,11 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
       set({ lastTrainLoss: result.loss, isTraining: false });
       get().fetchState();
       get().fetchMemory();
-    } catch {
-      set({ isTraining: false });
+    } catch (error) {
+      set({
+        isTraining: false,
+        chatError: error instanceof Error ? error.message : 'Training failed',
+      });
     }
   },
 
@@ -277,9 +381,8 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
         lastThinkResult: thinkResult,
       }));
       get().fetchState();
-      get().fetchMemory();
-    } catch {
-      // Continue even if one step fails
+      await get().fetchMemory();
+      set({ mostActiveNodes: activeNodesFromMemory(get().memory) });
     } finally {
       set({ isSequencerRunning: false });
     }
@@ -293,12 +396,18 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
 
   setSelectedModel: (modelId: string) => {
     const model = getModelById(modelId);
+    if (!model) return;
     set({
       selectedModelId: modelId,
       selectedModel: model,
-      modelCategory: model?.category || 'chat',
+      modelCategory: model.category,
       showModelSelector: false,
     });
+    try {
+      localStorage.setItem(STORAGE_MODEL, modelId);
+    } catch {
+      /* storage disabled */
+    }
   },
 
   setModelCategory: (category: ModelCategory) => {
@@ -306,23 +415,27 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
   },
 
   setApiKey: (keyName: string, value: string) => {
-    set((s) => ({
-      apiKeys: { ...s.apiKeys, [keyName]: value },
-    }));
-    // Also persist to localStorage
+    const trimmed = value.trim();
+    set((s) => {
+      const next = { ...s.apiKeys };
+      if (trimmed) next[keyName] = trimmed;
+      else delete next[keyName];
+      return { apiKeys: next };
+    });
+    // Persist to localStorage so the key survives reloads (client-side only —
+    // it is never stored in a cookie or sent to our logs).
     try {
-      const stored = JSON.parse(localStorage.getItem('liquidbrain_api_keys') || '{}');
-      stored[keyName] = value;
-      localStorage.setItem('liquidbrain_api_keys', JSON.stringify(stored));
-    } catch {}
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '{}');
+      if (trimmed) stored[keyName] = trimmed;
+      else delete stored[keyName];
+      localStorage.setItem(STORAGE_KEYS, JSON.stringify(stored));
+    } catch {
+      /* storage disabled */
+    }
   },
 
   toggleModelSelector: () => {
     set((s) => ({ showModelSelector: !s.showModelSelector }));
-  },
-
-  toggleSettings: () => {
-    set((s) => ({ showSettings: !s.showSettings }));
   },
 
   // ─── Specialized Actions ───
@@ -337,7 +450,7 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
 
   generateImage: async (prompt: string) => {
     const { selectedModelId, apiKeys } = get();
-    set({ isImageGenerating: true });
+    set({ isImageGenerating: true, imageError: null });
     try {
       const res = await fetch('/api/agi/image', {
         method: 'POST',
@@ -349,13 +462,13 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
         }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (!res.ok || data.error) throw new Error(data.error || `Image generation failed (${res.status})`);
       set((s) => ({
         generatedImages: [...(data.images || []).map((img: any) => ({ ...img, prompt })), ...s.generatedImages].slice(0, 20),
         isImageGenerating: false,
       }));
     } catch (error: any) {
-      set({ isImageGenerating: false });
+      set({ isImageGenerating: false, imageError: error?.message ?? 'Image generation failed' });
       console.error('[Image Gen]', error);
     }
   },
@@ -374,10 +487,10 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
         }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (!res.ok || data.error) throw new Error(data.error || `TTS failed (${res.status})`);
       set({ audioData: data.audio, isTTSGenerating: false });
     } catch (error: any) {
-      set({ isTTSGenerating: false });
+      set({ isTTSGenerating: false, chatError: error?.message ?? 'TTS failed' });
       console.error('[TTS]', error);
     }
   },
@@ -396,10 +509,10 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
         }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (!res.ok || data.error) throw new Error(data.error || `Safety check failed (${res.status})`);
       set({ safetyResult: data, isSafetyChecking: false });
     } catch (error: any) {
-      set({ isSafetyChecking: false });
+      set({ isSafetyChecking: false, chatError: error?.message ?? 'Safety check failed' });
       console.error('[Safety]', error);
     }
   },
@@ -419,21 +532,11 @@ export const useAgiStore = create<AgiStore>((set, get) => ({
         }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (!res.ok || data.error) throw new Error(data.error || `Vision analysis failed (${res.status})`);
       set({ visionResult: data.analysis, isVisionAnalyzing: false });
     } catch (error: any) {
-      set({ isVisionAnalyzing: false });
+      set({ isVisionAnalyzing: false, chatError: error?.message ?? 'Vision analysis failed' });
       console.error('[Vision]', error);
     }
   },
 }));
-
-// ─── Load persisted API keys on startup ───
-if (typeof window !== 'undefined') {
-  try {
-    const stored = JSON.parse(localStorage.getItem('liquidbrain_api_keys') || '{}');
-    if (Object.keys(stored).length > 0) {
-      useAgiStore.setState({ apiKeys: stored });
-    }
-  } catch {}
-}
