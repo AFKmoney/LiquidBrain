@@ -36,7 +36,7 @@ export interface AIModel {
   isFree: boolean;
   requiresApiKey: boolean;
   apiKeyName: string;     // env var name, e.g. "NVIDIA_API_KEY"
-  params?: number;        // Model parameter count description
+  params?: string;        // Human-readable parameter count, e.g. "120B (12B active)"
   tags: string[];
 }
 

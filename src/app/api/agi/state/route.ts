@@ -1,27 +1,24 @@
 import { NextResponse } from "next/server";
+import { callBackend, BACKEND_URL } from "@/lib/agi/backend";
+import type { BrainState } from "@/lib/agi/api";
 
-const BACKEND_URL = "http://127.0.0.1:8080";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function GET() {
-  try {
-    console.log("[AGI Proxy] Fetching state from", `${BACKEND_URL}/api/state`);
-    const res = await fetch(`${BACKEND_URL}/api/state`, {
-      signal: AbortSignal.timeout(8000),
-    });
-    console.log("[AGI Proxy] Response status:", res.status);
-    if (!res.ok) {
-      return NextResponse.json(
-        { status: "error", error: `Backend returned ${res.status}` },
-        { status: res.status }
-      );
-    }
-    const data = await res.json();
-    return NextResponse.json(data);
-  } catch (err) {
-    console.error("[AGI Proxy] Error:", err);
+  const result = await callBackend<BrainState>("/api/state");
+
+  if (!result.ok) {
+    // status === null → unreachable (503); otherwise forward the backend status.
     return NextResponse.json(
-      { status: "offline", error: "Backend unreachable" },
-      { status: 503 }
+      {
+        status: result.status === null ? "offline" : "error",
+        error: result.error,
+        backend: BACKEND_URL,
+      },
+      { status: result.status ?? 503 }
     );
   }
+
+  return NextResponse.json(result.data);
 }

@@ -32,10 +32,26 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
 
+
+# npm is the package manager of record: package-lock.json is committed.
+# These are stray locks from other managers, plus whatever `bun install` in
+# .zscripts/ writes during a deploy.
+yarn.lock
+pnpm-lock.yaml
+bun.lock
+bun.lockb
+
+# mini-services install leftovers
+mini-services/*/bun.lock
+mini-services/*/node_modules/
+
+# runtime leftovers
+*.pid
 
 # typescript
 *.tsbuildinfo

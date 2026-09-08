@@ -1,28 +1,29 @@
 import { NextResponse } from "next/server";
-
-const BACKEND_URL = "http://127.0.0.1:8080";
+import { guard } from "@/lib/server/guard";
+import { callBackend } from "@/lib/agi/backend";
+import type { TrainResponse } from "@/lib/agi/types";
 
 export async function POST(request: Request) {
-  try {
-    const body = await request.json();
-    const res = await fetch(`${BACKEND_URL}/api/train`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: body.text }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) {
-      return NextResponse.json(
-        { loss: -1, error: `Backend returned ${res.status}` },
-        { status: res.status }
-      );
-    }
-    const data = await res.json();
-    return NextResponse.json(data);
-  } catch {
+  const guarded = await guard(request, { scope: "engine" });
+  if (!guarded.ok) return guarded.response;
+  const body = guarded.body as { text?: string };
+
+  const text = (body.text ?? "").toString();
+  if (text.trim().length === 0) {
+    return NextResponse.json({ loss: -1, error: "Training text is required" }, { status: 400 });
+  }
+
+  const result = await callBackend<TrainResponse>("/api/train", {
+    method: "POST",
+    body: { text },
+  });
+
+  if (!result.ok) {
     return NextResponse.json(
-      { loss: -1, error: "Backend unreachable" },
-      { status: 503 }
+      { loss: -1, error: result.error },
+      { status: result.status ?? 503 }
     );
   }
+
+  return NextResponse.json(result.data);
 }

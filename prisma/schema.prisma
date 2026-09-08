@@ -30,3 +30,16 @@ model Post {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+/// One turn of the LiquidBrain conversation. Kept server-side so the
+/// chat context survives a page reload (see src/lib/agi/history.ts).
+model ChatTurn {
+  id        Int      @id @default(autoincrement())
+  role      String // "user" | "assistant"
+  content   String
+  model     String? // model id that produced an assistant turn
+  coherence Float? // fractal coherence at generation time
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}

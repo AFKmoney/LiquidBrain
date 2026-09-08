@@ -9,8 +9,9 @@ set -e
 # 使用 $0 获取脚本路径（兼容 sh 和 bash）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Next.js 项目路径
-NEXTJS_PROJECT_DIR="/home/z/my-project"
+# Next.js 项目路径（.zscripts 的上级目录；可用 NEXTJS_PROJECT_DIR 覆盖）
+SCRIPT_PARENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+NEXTJS_PROJECT_DIR="${NEXTJS_PROJECT_DIR:-$SCRIPT_PARENT_DIR}"
 
 # 检查 Next.js 项目目录是否存在
 if [ ! -d "$NEXTJS_PROJECT_DIR" ]; then

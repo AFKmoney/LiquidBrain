@@ -5,7 +5,10 @@ import { useAgiStore } from '@/lib/agi/store';
 import { FractalSNN } from '@/components/agi/FractalSNN';
 import { MemoryMap } from '@/components/agi/MemoryMap';
 import { ModelSelector } from '@/components/agi/ModelSelector';
-import { ModelCategory, MODEL_REGISTRY, getCategoryLabel } from '@/lib/models/registry';
+import { ControlPanel } from '@/components/agi/ControlPanel';
+import { ReflectionBar } from '@/components/agi/ReflectionBar';
+import { Sequencer } from '@/components/agi/Sequencer';
+import { getCategoryLabel } from '@/lib/models/registry';
 import {
   Brain,
   Send,
@@ -13,6 +16,7 @@ import {
   Cpu,
   Wifi,
   WifiOff,
+  Activity,
   Loader2,
   Map,
   ChevronRight,
@@ -21,120 +25,87 @@ import {
   Eye,
   X,
   Zap,
-  Lightbulb,
-  Activity,
-  Plus,
-  Image,
+  Trash2,
+  SlidersHorizontal,
+  AlertTriangle,
+  CheckCircle2,
+  Play,
   Mic,
   Shield,
   Video,
-  Upload,
-  Play,
-  AlertTriangle,
-  CheckCircle2,
-  XCircle,
-  Settings,
+  Image as ImageIcon,
 } from 'lucide-react';
 
-export default function Home() {
-  const {
-    fetchState,
-    fetchMemory,
-    isOnline,
-    brainState,
-    chatMessages,
-    isChatLoading,
-    sendChat,
-    triggerThink,
-    triggerReflect,
-    lastReflection,
-    isReflecting,
-    isThinking,
-    memory,
-    // Model selection
-    selectedModelId,
-    selectedModel,
-    modelCategory,
-    apiKeys,
-    showModelSelector,
-    setSelectedModel,
-    setApiKey,
-    toggleModelSelector,
-    // Image generation
-    imagePrompt,
-    generatedImages,
-    isImageGenerating,
-    generateImage,
-    setImagePrompt,
-    // TTS
-    isTTSGenerating,
-    audioData,
-    generateTTS,
-    // Safety
-    isSafetyChecking,
-    safetyResult,
-    checkSafety,
-    // Vision
-    isVisionAnalyzing,
-    visionResult,
-    visionImageUrl,
-    analyzeImage,
-    setVisionImageUrl,
-  } = useAgiStore();
+const STATE_POLL_MS = 3000;
+const MEMORY_POLL_MS = 5000;
 
-  const [chatInput, setChatInput] = useState('');
+export default function Home() {
+  const isOnline = useAgiStore((s) => s.isOnline);
+  const brainState = useAgiStore((s) => s.brainState);
+  const memory = useAgiStore((s) => s.memory);
+  const connect = useAgiStore((s) => s.connect);
+  const fetchState = useAgiStore((s) => s.fetchState);
+  const triggerThink = useAgiStore((s) => s.triggerThink);
+  const triggerReflect = useAgiStore((s) => s.triggerReflect);
+  const isThinking = useAgiStore((s) => s.isThinking);
+  const isReflecting = useAgiStore((s) => s.isReflecting);
+  const lastReflection = useAgiStore((s) => s.lastReflection);
+  const selectedModelId = useAgiStore((s) => s.selectedModelId);
+  const selectedModel = useAgiStore((s) => s.selectedModel);
+  const modelCategory = useAgiStore((s) => s.modelCategory);
+  const keyStatus = useAgiStore((s) => s.keyStatus);
+  const showModelSelector = useAgiStore((s) => s.showModelSelector);
+  const setSelectedModel = useAgiStore((s) => s.setSelectedModel);
+  // Keys are held by the server for this session; the UI only ever sees masks.
+  const saveApiKeys = useAgiStore((s) => s.saveApiKeys);
+  const forgetAllKeys = useAgiStore((s) => s.forgetAllKeys);
+  const isSavingKeys = useAgiStore((s) => s.isSavingKeys);
+  const keyMessage = useAgiStore((s) => s.keyMessage);
+  const toggleModelSelector = useAgiStore((s) => s.toggleModelSelector);
+
   const [showViz, setShowViz] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
-  const [safetyInput, setSafetyInput] = useState('');
-  const [ttsInput, setTtsInput] = useState('');
-  const [visionPrompt, setVisionPrompt] = useState('');
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [showConsole, setShowConsole] = useState(false);
 
-  // Polling
+  // Bootstrap: restore prefs, then probe state / memory / chat history.
   useEffect(() => {
-    fetchState();
-    const si = setInterval(fetchState, 3000);
-    return () => clearInterval(si);
+    connect();
+  }, [connect]);
+
+  // Poll the brain. Memory only refreshes while the engine is reachable so an
+  // offline backend is not hammered every few seconds.
+  useEffect(() => {
+    const stateTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchState();
+    }, STATE_POLL_MS);
+    const memoryTimer = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      const { isOnline: online, fetchMemory } = useAgiStore.getState();
+      if (online) void fetchMemory();
+    }, MEMORY_POLL_MS);
+    return () => {
+      clearInterval(stateTimer);
+      clearInterval(memoryTimer);
+    };
   }, [fetchState]);
 
+  // Esc closes the top-most overlay (model selector → fractal view → console).
   useEffect(() => {
-    fetchMemory();
-    const mi = setInterval(fetchMemory, 5000);
-    return () => clearInterval(mi);
-  }, [fetchMemory]);
-
-  // Auto-scroll
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
-
-  // Auto-resize textarea
-  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setChatInput(e.target.value);
-    const ta = e.target;
-    ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
-  };
-
-  const handleSend = useCallback(() => {
-    if (!chatInput.trim() || isChatLoading) return;
-    sendChat(chatInput.trim());
-    setChatInput('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
-  }, [chatInput, isChatLoading, sendChat]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (useAgiStore.getState().showModelSelector) {
+        toggleModelSelector();
+      } else if (showViz) {
+        setShowViz(false);
+      } else if (showConsole) {
+        setShowConsole(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showViz, showConsole, toggleModelSelector]);
 
   const coherence = lastReflection?.coherence ?? brainState.coherence;
-  const insight = lastReflection?.insight ?? brainState.last_insight;
 
   return (
     <div className="h-dvh flex bg-[#212121] text-white overflow-hidden">
@@ -152,6 +123,7 @@ export default function Home() {
             <button
               onClick={() => setShowSidebar(false)}
               className="p-1 rounded hover:bg-white/10 transition-colors text-slate-400 hover:text-white"
+              aria-label="Hide sidebar"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -179,7 +151,7 @@ export default function Home() {
           {/* Brain Stats Section */}
           <div className="p-3 space-y-2.5">
             <div className="flex items-center gap-2">
-              <Activity className="w-3.5 h-3.5 text-cyan-400" />
+              <Cpu className="w-3.5 h-3.5 text-cyan-400" />
               <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Brain</span>
             </div>
             <div className="space-y-1.5">
@@ -241,6 +213,15 @@ export default function Home() {
               <Eye className="w-3.5 h-3.5" />
               Fractal View
             </button>
+            <button
+              onClick={() => setShowConsole(!showConsole)}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-colors ${
+                showConsole ? 'bg-emerald-600/15 text-emerald-400' : 'text-slate-300 hover:bg-white/5'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              Brain Console
+            </button>
           </div>
 
           <div className="w-full h-px bg-white/5" />
@@ -256,7 +237,7 @@ export default function Home() {
               {memory.concepts.length === 0 && (
                 <p className="text-[11px] text-slate-600 text-center py-3">Chat to create memories</p>
               )}
-              {memory.concepts
+              {[...memory.concepts]
                 .sort((a, b) => b.salience - a.salience)
                 .slice(0, 30)
                 .map((c) => (
@@ -283,11 +264,12 @@ export default function Home() {
       <main className="flex-1 flex flex-col min-w-0 min-h-0 relative">
         {/* Top Bar */}
         <header className="h-11 shrink-0 flex items-center justify-between px-4 border-b border-white/5 bg-[#212121]">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             {!showSidebar && (
               <button
                 onClick={() => setShowSidebar(true)}
                 className="p-1 rounded hover:bg-white/10 transition-colors text-slate-400 hover:text-white"
+                aria-label="Show sidebar"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
@@ -295,28 +277,33 @@ export default function Home() {
             {/* Model Selector Button */}
             <button
               onClick={toggleModelSelector}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors min-w-0"
             >
-              <span className="text-sm font-medium text-white">
+              <span className="text-sm font-medium text-white truncate">
                 {selectedModel?.name || 'GLM-5.1'}
               </span>
-              <ChevronRight className="w-3 h-3 text-slate-500 rotate-90" />
+              <ChevronRight className="w-3 h-3 text-slate-500 rotate-90 shrink-0" />
             </button>
             {selectedModel && (
               <div className="flex items-center gap-1.5">
                 {modelCategory === 'chat' && <Cpu className="w-3 h-3 text-cyan-400" />}
                 {modelCategory === 'vision' && <Eye className="w-3 h-3 text-violet-400" />}
-                {modelCategory === 'image-gen' && <Image className="w-3 h-3 text-pink-400" />}
+                {modelCategory === 'image-gen' && <ImageIcon className="w-3 h-3 text-pink-400" />}
                 {modelCategory === 'video-gen' && <Video className="w-3 h-3 text-orange-400" />}
                 {modelCategory === 'tts' && <Mic className="w-3 h-3 text-emerald-400" />}
                 {modelCategory === 'safety' && <Shield className="w-3 h-3 text-amber-400" />}
-                <span className="text-[10px] text-slate-500">
+                <span className="text-[10px] text-slate-500 hidden sm:inline">
                   {getCategoryLabel(modelCategory)}
                 </span>
               </div>
             )}
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-3 shrink-0">
+            {!isOnline && (
+              <span className="text-[10px] text-slate-500 hidden md:inline">
+                Fractal engine offline — LLM-only mode
+              </span>
+            )}
             {isOnline ? (
               <div className="flex items-center gap-1">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
@@ -336,24 +323,83 @@ export default function Home() {
           <ModelSelector
             selectedModelId={selectedModelId}
             onSelectModel={setSelectedModel}
-            apiKeys={apiKeys}
-            onSetApiKey={setApiKey}
+            keyStatus={keyStatus}
+            onSaveKeys={saveApiKeys}
+            onForgetKeys={forgetAllKeys}
+            isSaving={isSavingKeys}
+            message={keyMessage}
             onClose={toggleModelSelector}
           />
         )}
 
+        <div className="flex-1 min-h-0 flex">
+          {/* ─── Dynamic Content Based on Model Category ─── */}
+          <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+            {!showModelSelector && (
+              <>
+                {modelCategory === 'vision' && <VisionPanel />}
+                {modelCategory === 'image-gen' && <ImageGenPanel />}
+                {modelCategory === 'video-gen' && <VideoGenPanel />}
+                {modelCategory === 'tts' && <TTSPanel />}
+                {modelCategory === 'safety' && <SafetyPanel />}
+                {(modelCategory === 'chat' || modelCategory === 'specialized') && <ChatPanel />}
+                {/* Coherence / reflection status line */}
+                <div className="shrink-0 overflow-x-auto hidden md:block">
+                  <ReflectionBar />
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* ─── Brain Console (metrics, actions, training, sequencer) ─── */}
+          {showConsole && !showModelSelector && (
+            <aside className="fixed inset-y-0 right-0 z-30 w-full sm:static sm:z-auto sm:w-[380px] shrink-0 overflow-y-auto bg-[#171717] sm:bg-[#1a1a1a] border-l border-white/5 p-3 space-y-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  Console
+                </span>
+                <button
+                  onClick={() => setShowConsole(false)}
+                  className="p-1 rounded hover:bg-white/10 text-slate-400 hover:text-white"
+                  aria-label="Close console"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <ControlPanel />
+              <div className="w-full h-px bg-white/5" />
+              <Sequencer />
+            </aside>
+          )}
+        </div>
+
         {/* Visualization Panel (overlay) */}
         {showViz && !showModelSelector && (
-          <div className="absolute inset-0 top-11 z-20 bg-[#212121]/95 backdrop-blur-sm flex">
+          <div className="absolute inset-0 top-11 z-20 bg-[#212121]/95 backdrop-blur-sm flex flex-col md:flex-row">
+            {/* Mobile-only header: the memory-map rail (which holds the close
+                button on desktop) is hidden below md. */}
+            <div className="md:hidden flex items-center justify-between px-3 py-2 border-b border-white/5">
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                Fractal View
+              </span>
+              <button
+                onClick={() => setShowViz(false)}
+                className="p-1 rounded hover:bg-white/10 text-slate-400 hover:text-white"
+                aria-label="Close fractal view"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
             <div className="flex-1 min-h-0 min-w-0 p-3">
               <FractalSNN />
             </div>
-            <div className="w-72 shrink-0 border-l border-white/5 p-3 flex flex-col min-h-0">
+            <div className="hidden md:flex w-72 shrink-0 border-l border-white/5 p-3 flex-col min-h-0">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Memory Map</span>
                 <button
                   onClick={() => setShowViz(false)}
                   className="p-1 rounded hover:bg-white/10 text-slate-400 hover:text-white"
+                  aria-label="Close fractal view"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -364,19 +410,6 @@ export default function Home() {
             </div>
           </div>
         )}
-
-        {/* ─── Dynamic Content Based on Model Category ─── */}
-        {!showModelSelector && !showViz && (
-          <>
-            {modelCategory === 'chat' && <ChatPanel />}
-            {modelCategory === 'vision' && <VisionPanel />}
-            {modelCategory === 'image-gen' && <ImageGenPanel />}
-            {modelCategory === 'video-gen' && <VideoGenPanel />}
-            {modelCategory === 'tts' && <TTSPanel />}
-            {modelCategory === 'safety' && <SafetyPanel />}
-            {modelCategory === 'specialized' && <ChatPanel />}
-          </>
-        )}
       </main>
     </div>
   );
@@ -385,7 +418,13 @@ export default function Home() {
 // ═══════════════ CHAT PANEL ═══════════════
 
 function ChatPanel() {
-  const { chatMessages, isChatLoading, sendChat } = useAgiStore();
+  const chatMessages = useAgiStore((s) => s.chatMessages);
+  const isChatLoading = useAgiStore((s) => s.isChatLoading);
+  const isStreamingReply = useAgiStore((s) => s.isStreamingReply);
+  const chatError = useAgiStore((s) => s.chatError);
+  const persistenceEnabled = useAgiStore((s) => s.persistenceEnabled);
+  const sendChat = useAgiStore((s) => s.sendChat);
+  const clearChat = useAgiStore((s) => s.clearChat);
   const [chatInput, setChatInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -401,12 +440,12 @@ function ChatPanel() {
     ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
   };
 
-  const handleSend = () => {
+  const handleSend = useCallback(() => {
     if (!chatInput.trim() || isChatLoading) return;
     sendChat(chatInput.trim());
     setChatInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-  };
+  }, [chatInput, isChatLoading, sendChat]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -419,9 +458,9 @@ function ChatPanel() {
     <>
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-4 py-6">
-          {chatMessages.length === 0 && <WelcomeScreen />}
+          {chatMessages.length === 0 && !isChatLoading && <WelcomeScreen />}
           {chatMessages.map((msg, i) => (
-            <div key={i} className="mb-5">
+            <div key={`${msg.timestamp}-${i}`} className="mb-5">
               {msg.role === 'assistant' ? (
                 <div className="flex gap-3 max-w-full">
                   <div className="w-7 h-7 rounded-sm bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center shrink-0 mt-0.5">
@@ -430,6 +469,9 @@ function ChatPanel() {
                   <div className="flex-1 min-w-0 pt-0.5">
                     <div className="text-[15px] text-slate-200 leading-7 whitespace-pre-wrap break-words">
                       {msg.content}
+                      {isStreamingReply && i === chatMessages.length - 1 && (
+                        <span className="inline-block w-[3px] h-4 bg-cyan-400/80 ml-1 align-middle animate-pulse" />
+                      )}
                     </div>
                   </div>
                 </div>
@@ -449,7 +491,7 @@ function ChatPanel() {
               )}
             </div>
           ))}
-          {isChatLoading && (
+          {isChatLoading && !isStreamingReply && (
             <div className="flex gap-3 mb-5">
               <div className="w-7 h-7 rounded-sm bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center shrink-0">
                 <Brain className="w-4 h-4 text-white" />
@@ -458,6 +500,17 @@ function ChatPanel() {
                 <span className="w-2 h-2 bg-cyan-400/60 rounded-full animate-bounce [animation-delay:0ms]" />
                 <span className="w-2 h-2 bg-cyan-400/60 rounded-full animate-bounce [animation-delay:150ms]" />
                 <span className="w-2 h-2 bg-cyan-400/60 rounded-full animate-bounce [animation-delay:300ms]" />
+              </div>
+            </div>
+          )}
+          {chatError && (
+            <div className="mb-5 flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-xs text-red-300 break-words">{chatError}</p>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Your message was not answered — adjust the model or API key and retry.
+                </p>
               </div>
             </div>
           )}
@@ -482,13 +535,27 @@ function ChatPanel() {
               onClick={handleSend}
               disabled={isChatLoading || !chatInput.trim()}
               className="p-1.5 mr-2 mb-2 rounded-lg bg-white text-black hover:bg-slate-200 disabled:bg-white/10 disabled:text-slate-600 transition-colors shrink-0"
+              aria-label="Send message"
             >
               <Send className="w-4 h-4" />
             </button>
           </div>
-          <p className="text-[11px] text-slate-600 text-center mt-2">
-            LiquidBrain Fractal AGI — Memory persists across conversation
-          </p>
+          <div className="flex items-center justify-between mt-2">
+            <p className="text-[11px] text-slate-600">
+              {persistenceEnabled
+                ? 'Conversation persisted in SQLite — context survives reloads'
+                : 'Ephemeral session — run `prisma db push` to persist conversations'}
+            </p>
+            {chatMessages.length > 0 && (
+              <button
+                onClick={clearChat}
+                className="flex items-center gap-1 text-[11px] text-slate-600 hover:text-red-400 transition-colors"
+              >
+                <Trash2 className="w-3 h-3" />
+                Clear
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </>
@@ -498,7 +565,12 @@ function ChatPanel() {
 // ═══════════════ VISION PANEL ═══════════════
 
 function VisionPanel() {
-  const { isVisionAnalyzing, visionResult, analyzeImage, visionImageUrl, setVisionImageUrl, selectedModel } = useAgiStore();
+  const isVisionAnalyzing = useAgiStore((s) => s.isVisionAnalyzing);
+  const visionResult = useAgiStore((s) => s.visionResult);
+  const analyzeImage = useAgiStore((s) => s.analyzeImage);
+  const visionImageUrl = useAgiStore((s) => s.visionImageUrl);
+  const setVisionImageUrl = useAgiStore((s) => s.setVisionImageUrl);
+  const selectedModel = useAgiStore((s) => s.selectedModel);
   const [prompt, setPrompt] = useState('Describe what you see in this image in detail.');
 
   return (
@@ -515,8 +587,11 @@ function VisionPanel() {
 
         <div className="space-y-4">
           <div>
-            <label className="text-xs text-slate-500 mb-1.5 block">Image URL</label>
+            <label className="text-xs text-slate-500 mb-1.5 block" htmlFor="vision-url">
+              Image URL
+            </label>
             <input
+              id="vision-url"
               type="url"
               value={visionImageUrl}
               onChange={(e) => setVisionImageUrl(e.target.value)}
@@ -525,8 +600,11 @@ function VisionPanel() {
             />
           </div>
           <div>
-            <label className="text-xs text-slate-500 mb-1.5 block">Question / Prompt</label>
+            <label className="text-xs text-slate-500 mb-1.5 block" htmlFor="vision-prompt">
+              Question / Prompt
+            </label>
             <textarea
+              id="vision-prompt"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="What do you see in this image?"
@@ -571,14 +649,20 @@ function VisionPanel() {
 // ═══════════════ IMAGE GENERATION PANEL ═══════════════
 
 function ImageGenPanel() {
-  const { imagePrompt, setImagePrompt, generateImage, isImageGenerating, generatedImages, selectedModel } = useAgiStore();
+  const imagePrompt = useAgiStore((s) => s.imagePrompt);
+  const setImagePrompt = useAgiStore((s) => s.setImagePrompt);
+  const generateImage = useAgiStore((s) => s.generateImage);
+  const isImageGenerating = useAgiStore((s) => s.isImageGenerating);
+  const generatedImages = useAgiStore((s) => s.generatedImages);
+  const imageError = useAgiStore((s) => s.imageError);
+  const selectedModel = useAgiStore((s) => s.selectedModel);
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="max-w-3xl mx-auto px-4 py-6">
         <div className="text-center mb-8">
           <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-pink-500/20 to-orange-500/20 flex items-center justify-center mb-5 mx-auto border border-pink-500/10">
-            <Image className="w-7 h-7 text-pink-400" />
+            <ImageIcon className="w-7 h-7 text-pink-400" />
           </div>
           <h2 className="text-xl font-semibold text-white mb-2">Image Generation</h2>
           <p className="text-slate-500 text-sm">Generate images from text descriptions</p>
@@ -598,16 +682,31 @@ function ImageGenPanel() {
             disabled={!imagePrompt || isImageGenerating}
             className="w-full py-3 rounded-xl bg-pink-600 hover:bg-pink-500 disabled:bg-white/5 disabled:text-slate-600 text-white font-medium transition-colors flex items-center justify-center gap-2"
           >
-            {isImageGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Image className="w-4 h-4" />}
+            {isImageGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
             {isImageGenerating ? 'Generating...' : 'Generate Image'}
           </button>
+
+          {imageError && (
+            <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <p className="text-xs text-red-300 break-words">{imageError}</p>
+            </div>
+          )}
 
           {generatedImages.length > 0 && (
             <div className="grid grid-cols-2 gap-3">
               {generatedImages.map((img, i) => (
-                <div key={i} className="rounded-xl overflow-hidden border border-white/5">
-                  {img.url && <img src={img.url} alt={img.prompt} className="w-full aspect-square object-cover" />}
-                  {img.b64_json && <img src={`data:image/png;base64,${img.b64_json}`} alt={img.prompt} className="w-full aspect-square object-cover" />}
+                <div key={`${img.prompt}-${i}`} className="rounded-xl overflow-hidden border border-white/5">
+                  {img.url && (
+                    <img src={img.url} alt={img.prompt} className="w-full aspect-square object-cover" />
+                  )}
+                  {img.b64_json && (
+                    <img
+                      src={`data:image/png;base64,${img.b64_json}`}
+                      alt={img.prompt}
+                      className="w-full aspect-square object-cover"
+                    />
+                  )}
                   <div className="p-2 bg-black/30">
                     <p className="text-[10px] text-slate-500 line-clamp-2">{img.prompt}</p>
                   </div>
@@ -624,7 +723,7 @@ function ImageGenPanel() {
 // ═══════════════ VIDEO GENERATION PANEL ═══════════════
 
 function VideoGenPanel() {
-  const { selectedModel } = useAgiStore();
+  const selectedModel = useAgiStore((s) => s.selectedModel);
   const [prompt, setPrompt] = useState('');
 
   return (
@@ -666,7 +765,10 @@ function VideoGenPanel() {
 // ═══════════════ TTS PANEL ═══════════════
 
 function TTSPanel() {
-  const { isTTSGenerating, audioData, generateTTS, selectedModel } = useAgiStore();
+  const isTTSGenerating = useAgiStore((s) => s.isTTSGenerating);
+  const audioData = useAgiStore((s) => s.audioData);
+  const generateTTS = useAgiStore((s) => s.generateTTS);
+  const selectedModel = useAgiStore((s) => s.selectedModel);
   const [text, setText] = useState('');
 
   return (
@@ -719,7 +821,10 @@ function TTSPanel() {
 // ═══════════════ SAFETY PANEL ═══════════════
 
 function SafetyPanel() {
-  const { isSafetyChecking, safetyResult, checkSafety, selectedModel } = useAgiStore();
+  const isSafetyChecking = useAgiStore((s) => s.isSafetyChecking);
+  const safetyResult = useAgiStore((s) => s.safetyResult);
+  const checkSafety = useAgiStore((s) => s.checkSafety);
+  const selectedModel = useAgiStore((s) => s.selectedModel);
   const [text, setText] = useState('');
 
   return (
@@ -752,27 +857,29 @@ function SafetyPanel() {
           </button>
 
           {safetyResult && (
-            <div className={`p-4 rounded-xl border ${
-              safetyResult.is_safe
-                ? 'bg-emerald-500/5 border-emerald-500/20'
-                : 'bg-red-500/5 border-red-500/20'
-            }`}>
+            <div
+              className={`p-4 rounded-xl border ${
+                safetyResult.is_safe
+                  ? 'bg-emerald-500/5 border-emerald-500/20'
+                  : 'bg-red-500/5 border-red-500/20'
+              }`}
+            >
               <div className="flex items-center gap-2 mb-2">
                 {safetyResult.is_safe ? (
                   <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                 ) : (
-                  <XCircle className="w-5 h-5 text-red-400" />
+                  <X className="w-5 h-5 text-red-400" />
                 )}
-                <span className={`text-sm font-medium ${
-                  safetyResult.is_safe ? 'text-emerald-400' : 'text-red-400'
-                }`}>
+                <span
+                  className={`text-sm font-medium ${
+                    safetyResult.is_safe ? 'text-emerald-400' : 'text-red-400'
+                  }`}
+                >
                   {safetyResult.is_safe ? 'Content is Safe' : 'Unsafe Content Detected'}
                 </span>
               </div>
               {safetyResult.violation && (
-                <p className="text-sm text-slate-400 mb-2">
-                  Violation: {safetyResult.violation}
-                </p>
+                <p className="text-sm text-slate-400 mb-2">Violation: {safetyResult.violation}</p>
               )}
               {safetyResult.categories && (
                 <div className="space-y-1">
@@ -800,7 +907,7 @@ function SafetyPanel() {
 // ═══════════════ WELCOME SCREEN ═══════════════
 
 function WelcomeScreen() {
-  const { sendChat } = useAgiStore();
+  const sendChat = useAgiStore((s) => s.sendChat);
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">

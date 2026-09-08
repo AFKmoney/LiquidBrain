@@ -1,7 +1,9 @@
 #!/bin/bash
 
 # 配置项
-ROOT_DIR="/home/z/my-project/mini-services"
+# 项目根目录 = 本脚本所在 .zscripts 的上级目录
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+ROOT_DIR="$PROJECT_DIR/mini-services"
 
 main() {
     echo "🚀 开始批量安装依赖..."
